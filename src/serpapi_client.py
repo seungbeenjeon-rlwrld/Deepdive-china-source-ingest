@@ -47,53 +47,107 @@ _FRESHNESS_DAYS = {
 }
 
 
+# SerpApi answers an exhausted monthly quota with 429. Distinguishing that
+# from a bad key matters: one means "rotate", the other means "stop".
+_QUOTA_MARKERS = ("run out of searches", "exceeded", "quota", "plan limit")
+
+
 class SerpApiClient:
+    """Rotates through the configured keys as each one's quota runs out."""
+
     def __init__(self, settings: SerpApiSettings) -> None:
-        if not settings.api_key:
+        if not settings.has_credentials:
             raise AuthError(
-                "SERPAPI_KEY is not set.",
-                hint="Get a key at https://serpapi.com/manage-api-key and put it in .env, "
-                     "or run with --provider mock to test offline.",
+                "no SerpApi key configured.",
+                hint="Set SERPAPI_KEY in .env (get one at "
+                     "https://serpapi.com/manage-api-key), or run with "
+                     "--provider mock to test offline.",
             )
         self.settings = settings
         self.log = get_logger()
+        self._keys = list(settings.api_keys)
+        self._index = 0
+        self._exhausted: set[int] = set()
+
+    @property
+    def active_key_number(self) -> int:
+        """1-based, for logs. Never log the key itself."""
+        return self._index + 1
+
+    def _advance(self, reason: str) -> bool:
+        """Mark the current key done and move to the next. False if none left."""
+        self._exhausted.add(self._index)
+        for candidate in range(len(self._keys)):
+            if candidate not in self._exhausted:
+                previous = self.active_key_number
+                self._index = candidate
+                self.log.warning(
+                    "SerpApi key %d %s — switching to key %d of %d",
+                    previous, reason, self.active_key_number, len(self._keys),
+                )
+                return True
+        return False
 
     def search(self, params: dict[str, Any]) -> dict[str, Any]:
         import requests
 
-        payload = {**params, "api_key": self.settings.api_key}
         self.log.debug("serpapi search: %s", {k: v for k, v in params.items()})
-        try:
-            response = requests.get(
-                SERPAPI_ENDPOINT, params=payload, timeout=self.settings.timeout_seconds
-            )
-        except requests.exceptions.Timeout as exc:
-            raise TimeoutError_(
-                f"SerpApi timed out after {self.settings.timeout_seconds}s. Baidu queries "
-                "routinely take 15-30s; raise serpapi.timeout_seconds."
-            ) from exc
-        except requests.exceptions.RequestException as exc:
-            raise ProviderError(f"SerpApi request failed: {exc}") from exc
 
-        if response.status_code == 401:
-            raise AuthError(
-                "SerpApi rejected the key (HTTP 401).",
-                hint="Check SERPAPI_KEY in .env against https://serpapi.com/manage-api-key",
-            )
-        if response.status_code == 429:
-            raise RateLimitError(
-                "SerpApi monthly search quota exhausted or rate limited (HTTP 429).",
-                hint="Check your plan at https://serpapi.com/dashboard. The free tier is "
-                     "100 searches/month.",
-            )
-        if response.status_code >= 400:
-            raise ProviderError(f"SerpApi returned HTTP {response.status_code}: {response.text[:200]}")
+        # One attempt per remaining key: a quota error rotates, anything else stops.
+        for _ in range(len(self._keys)):
+            payload = {**params, "api_key": self._keys[self._index]}
+            try:
+                response = requests.get(
+                    SERPAPI_ENDPOINT, params=payload,
+                    timeout=self.settings.timeout_seconds,
+                )
+            except requests.exceptions.Timeout as exc:
+                raise TimeoutError_(
+                    f"SerpApi timed out after {self.settings.timeout_seconds}s. Baidu "
+                    "queries routinely take 15-30s; raise serpapi.timeout_seconds."
+                ) from exc
+            except requests.exceptions.RequestException as exc:
+                raise ProviderError(f"SerpApi request failed: {exc}") from exc
 
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise MalformedResponseError(f"SerpApi returned non-JSON: {response.text[:200]}") from exc
-        return body
+            if response.status_code == 401:
+                # A rejected key is a configuration error, not exhaustion. Try
+                # the next one rather than stopping the whole run on a typo.
+                if self._advance("was rejected (HTTP 401)"):
+                    continue
+                raise AuthError(
+                    f"all {len(self._keys)} SerpApi key(s) were rejected (HTTP 401).",
+                    hint="Check the keys in .env against "
+                         "https://serpapi.com/manage-api-key",
+                )
+
+            if response.status_code == 429:
+                detail = response.text[:200]
+                if self._advance("hit its quota (HTTP 429)"):
+                    continue
+                raise RateLimitError(
+                    f"all {len(self._keys)} SerpApi key(s) are out of searches "
+                    f"(HTTP 429): {detail}",
+                    hint="Check plans at https://serpapi.com/dashboard, or add another "
+                         "key as SERPAPI_KEY_2 in .env. The free tier is 250 "
+                         "searches/month per account.",
+                )
+
+            if response.status_code >= 400:
+                raise ProviderError(
+                    f"SerpApi returned HTTP {response.status_code}: {response.text[:200]}"
+                )
+
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise MalformedResponseError(
+                    f"SerpApi returned non-JSON: {response.text[:200]}"
+                ) from exc
+
+        raise RateLimitError(
+            f"all {len(self._keys)} SerpApi key(s) are unusable.",
+            hint="Check https://serpapi.com/dashboard",
+        )
 
 
 def _to_citation(item: dict[str, Any], *, index: int) -> dict[str, Any]:
@@ -183,6 +237,8 @@ class SerpApiBaiduProvider(ResearchProvider):
         return {
             "provider": self.name,
             "model": None,
+            "keys_configured": len(self.settings.api_keys),
+            "active_key_number": self.client.active_key_number,
             "endpoints": {"inference": None, "search": f"{SERPAPI_ENDPOINT}?engine=baidu"},
             "search_flags": {
                 "engine": "baidu",

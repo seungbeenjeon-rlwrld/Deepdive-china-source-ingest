@@ -855,6 +855,8 @@ def fake_requests(**attrs):
 
     real = _sys.modules.get("requests")
     stub = _types.ModuleType("requests")
+    if real is not None and "exceptions" not in attrs:
+        stub.exceptions = real.exceptions
     for name, value in attrs.items():
         setattr(stub, name, value)
     _sys.modules["requests"] = stub
@@ -970,7 +972,7 @@ class TestSweepProviderSplit(unittest.TestCase):
             # serpapi with no key raises AuthError at construction.
             h.config.search_sweep = {**h.config.search_sweep, "provider": "serpapi",
                                      "site_filters": [None], "max_queries": 1}
-            h.config.serpapi.api_key = None
+            h.config.serpapi.api_keys = []
             h.pipeline.run_stage1("AgiBot")
             sweep = h.pipeline.run_search_sweep("AgiBot", ["模拟科技 融资"])
             # Stage 1 survived and the sweep still produced evidence.
@@ -1012,8 +1014,10 @@ class TestSerpApiProvider(unittest.TestCase):
         from src.serpapi_client import SerpApiBaiduProvider
 
         p = SerpApiBaiduProvider.__new__(SerpApiBaiduProvider)
-        p.settings = SerpApiSettings(api_key="k")
+        p.settings = SerpApiSettings(api_keys=["k"])
         p.log = __import__("logging").getLogger("test")
+        # describe() reports the active key number, so a stub client is needed.
+        p.client = type("C", (), {"active_key_number": 1})()
         return p
 
     def test_missing_key_raises_auth_error(self):
@@ -1022,8 +1026,16 @@ class TestSerpApiProvider(unittest.TestCase):
         from src.serpapi_client import SerpApiClient
 
         with self.assertRaises(AuthError) as ctx:
-            SerpApiClient(SerpApiSettings(api_key=None))
+            SerpApiClient(SerpApiSettings(api_keys=[]))
         self.assertIn("serpapi.com", ctx.exception.hint)
+
+    def test_api_key_property_returns_the_first_key(self):
+        from src.config import SerpApiSettings
+
+        s = SerpApiSettings(api_keys=["a", "b", "c"])
+        self.assertEqual(s.api_key, "a")
+        self.assertTrue(s.has_credentials)
+        self.assertIsNone(SerpApiSettings().api_key)
 
     def test_cannot_run_research_prompts(self):
         from src.provider import ProviderError
@@ -1590,9 +1602,16 @@ class TestClaudeCliProvider(unittest.TestCase):
         from src.config import ClaudeCliSettings
         from src.provider import ProviderError
 
-        with self.assertRaises(ProviderError) as ctx:
-            ClaudeCliProvider(ClaudeCliSettings(binary="definitely-not-a-real-binary"))
-        self.assertIn("install.sh", ctx.exception.hint)
+        # Isolate from whatever is actually installed on this machine.
+        import src.claude_cli_client as mod
+        saved = mod.FALLBACK_PATHS
+        mod.FALLBACK_PATHS = ()
+        try:
+            with self.assertRaises(ProviderError) as ctx:
+                ClaudeCliProvider(ClaudeCliSettings(binary="definitely-not-a-real-binary"))
+            self.assertIn("install.sh", ctx.exception.hint)
+        finally:
+            mod.FALLBACK_PATHS = saved
 
     def test_prompt_goes_through_stdin_not_argv(self):
         """A 30k-char prompt must not be passed as a command-line argument."""
@@ -1675,3 +1694,229 @@ class TestClaudeCliProvider(unittest.TestCase):
 
     def test_describe_states_the_shared_allowance_tradeoff(self):
         self.assertIn("subscription allowance", self._provider().describe()["note"])
+
+    def test_not_logged_in_on_exit_zero_is_caught(self):
+        """Regression: the CLI prints 'Not logged in' to stdout and exits 0."""
+        from src.provider import ProviderError
+
+        p = self._provider()
+        self._stub_run(p, stdout="Not logged in · Please run /login", returncode=0)
+        with self.assertRaises(ProviderError) as ctx:
+            p.run_research("x", label="stage1")
+        self.assertIn("exit 0", str(ctx.exception))
+        self.assertIn("/login", ctx.exception.hint)
+
+    def test_usage_limit_on_exit_zero_is_caught(self):
+        from src.provider import ProviderError
+
+        p = self._provider()
+        self._stub_run(p, stdout="usage limit reached, try later", returncode=0)
+        with self.assertRaises(ProviderError) as ctx:
+            p.run_research("x")
+        self.assertIn("shares your", ctx.exception.hint)
+
+    def test_long_output_mentioning_rate_limit_is_not_flagged(self):
+        """Real research output may discuss limits; only short output is screened."""
+        p = self._provider()
+        body = "本文讨论 API rate limit 相关技术细节。" * 60
+        self._stub_run(p, stdout=body, returncode=0)
+        r = p.run_research("x")
+        self.assertEqual(r.text, body.strip())
+
+    def test_binary_is_found_at_the_installer_location(self):
+        import os
+        import tempfile
+
+        from src.claude_cli_client import ClaudeCliProvider
+
+        fake_home = tempfile.mkdtemp()
+        target = os.path.join(fake_home, "claude")
+        with open(target, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(target, 0o755)
+
+        import src.claude_cli_client as mod
+        saved = mod.FALLBACK_PATHS
+        mod.FALLBACK_PATHS = (target,)
+        try:
+            self.assertEqual(ClaudeCliProvider._resolve("definitely-not-real"), target)
+        finally:
+            mod.FALLBACK_PATHS = saved
+
+    def test_missing_everywhere_lists_the_locations_tried(self):
+        from src.claude_cli_client import ClaudeCliProvider
+        from src.provider import ProviderError
+
+        import src.claude_cli_client as mod
+        saved = mod.FALLBACK_PATHS
+        mod.FALLBACK_PATHS = ("/nonexistent/a/claude", "~/.local/bin/claude-nope")
+        try:
+            with self.assertRaises(ProviderError) as ctx:
+                ClaudeCliProvider._resolve("definitely-not-a-real-binary-xyz")
+            self.assertIn(".local/bin/claude-nope", str(ctx.exception))
+        finally:
+            mod.FALLBACK_PATHS = saved
+
+
+class TestSerpApiKeyRotation(unittest.TestCase):
+    """Several keys may be configured; an exhausted one must roll to the next."""
+
+    def _client(self, keys):
+        from src.config import SerpApiSettings
+        from src.serpapi_client import SerpApiClient
+
+        c = SerpApiClient.__new__(SerpApiClient)
+        c.settings = SerpApiSettings(api_keys=list(keys))
+        c.log = __import__("logging").getLogger("test")
+        c._keys = list(keys)
+        c._index = 0
+        c._exhausted = set()
+        return c
+
+    def _responses(self, client, script):
+        """`script` maps the key used -> (status, body)."""
+        used = []
+
+        def fake_get(url, params=None, timeout=None):
+            key = params["api_key"]
+            used.append(key)
+            status, body = script[key]
+            return type("R", (), {
+                "status_code": status,
+                "text": json.dumps(body),
+                "json": lambda _s, b=body: b,
+            })()
+
+        with fake_requests(get=fake_get, exceptions=__import__("requests").exceptions):
+            return used, client
+
+    def test_quota_exhaustion_rotates_to_the_next_key(self):
+        client = self._client(["k1", "k2"])
+        used, _ = self._responses(client, {
+            "k1": (429, {"error": "You've run out of searches"}),
+            "k2": (200, {"organic_results": [{"title": "t", "link": "u"}]}),
+        })
+        with fake_requests(get=lambda url, params=None, timeout=None: type("R", (), {
+            "status_code": 429 if params["api_key"] == "k1" else 200,
+            "text": "{}",
+            "json": lambda _s: ({"error": "run out of searches"}
+                                if params["api_key"] == "k1"
+                                else {"organic_results": [{"title": "t", "link": "u"}]}),
+        })(), exceptions=__import__("requests").exceptions):
+            body = client.search({"engine": "baidu", "q": "x"})
+        self.assertIn("organic_results", body)
+        self.assertEqual(client.active_key_number, 2)
+
+    def test_all_keys_exhausted_raises_with_the_count(self):
+        from src.provider import RateLimitError
+
+        client = self._client(["k1", "k2", "k3"])
+        with fake_requests(get=lambda url, params=None, timeout=None: type("R", (), {
+            "status_code": 429, "text": "out of searches",
+            "json": lambda _s: {"error": "out of searches"},
+        })(), exceptions=__import__("requests").exceptions):
+            with self.assertRaises(RateLimitError) as ctx:
+                client.search({"engine": "baidu", "q": "x"})
+        self.assertIn("3 SerpApi key(s)", str(ctx.exception))
+        self.assertIn("SERPAPI_KEY_2", ctx.exception.hint)
+
+    def test_rejected_key_also_rotates_rather_than_stopping_the_run(self):
+        client = self._client(["bad", "good"])
+        with fake_requests(get=lambda url, params=None, timeout=None: type("R", (), {
+            "status_code": 401 if params["api_key"] == "bad" else 200,
+            "text": "{}",
+            "json": lambda _s: ({"error": "Invalid API key"}
+                                if params["api_key"] == "bad"
+                                else {"organic_results": []}),
+        })(), exceptions=__import__("requests").exceptions):
+            body = client.search({"engine": "baidu", "q": "x"})
+        self.assertIn("organic_results", body)
+        self.assertEqual(client.active_key_number, 2)
+
+    def test_a_key_is_not_retried_once_exhausted(self):
+        """Rotation must be sticky, or every query pays the 429 round trip."""
+        client = self._client(["k1", "k2"])
+        calls = []
+
+        def fake_get(url, params=None, timeout=None):
+            calls.append(params["api_key"])
+            status = 429 if params["api_key"] == "k1" else 200
+            return type("R", (), {
+                "status_code": status, "text": "{}",
+                "json": lambda _s: ({"error": "out of searches"} if status == 429
+                                    else {"organic_results": []}),
+            })()
+
+        with fake_requests(get=fake_get, exceptions=__import__("requests").exceptions):
+            client.search({"engine": "baidu", "q": "a"})
+            client.search({"engine": "baidu", "q": "b"})
+        # k1 tried once, then never again
+        self.assertEqual(calls.count("k1"), 1)
+        self.assertEqual(calls.count("k2"), 2)
+
+    def test_keys_are_never_written_to_logs(self):
+        import logging
+
+        client = self._client(["SECRET-ONE", "SECRET-TWO"])
+        records = []
+
+        class Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = Capture()
+        client.log.addHandler(handler)
+        try:
+            client._advance("hit its quota")
+        finally:
+            client.log.removeHandler(handler)
+        joined = " ".join(records)
+        self.assertNotIn("SECRET-ONE", joined)
+        self.assertNotIn("SECRET-TWO", joined)
+        self.assertIn("key 2 of 2", joined)
+
+
+class TestSerpApiKeyCollection(unittest.TestCase):
+    """Keys may arrive as SERPAPI_KEYS or as numbered variables."""
+
+    def _collect(self, env):
+        import os
+
+        from src.config import _collect_serpapi_keys
+
+        saved = {k: os.environ.get(k) for k in
+                 ("SERPAPI_KEYS", "SERPAPI_KEY", "SERPAPI_KEY_2", "SERPAPI_KEY_3",
+                  "SERPAPI_KEY_4")}
+        for k in saved:
+            os.environ.pop(k, None)
+        os.environ.update(env)
+        try:
+            return _collect_serpapi_keys()
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_numbered_variables_are_read_in_order(self):
+        self.assertEqual(
+            self._collect({"SERPAPI_KEY": "a", "SERPAPI_KEY_2": "b", "SERPAPI_KEY_3": "c"}),
+            ["a", "b", "c"],
+        )
+
+    def test_numbering_stops_at_the_first_gap(self):
+        # KEY_4 without KEY_3 is a typo; reading past the gap would hide it.
+        self.assertEqual(
+            self._collect({"SERPAPI_KEY": "a", "SERPAPI_KEY_4": "d"}), ["a"]
+        )
+
+    def test_comma_separated_list_works(self):
+        self.assertEqual(self._collect({"SERPAPI_KEYS": "a, b ,c"}), ["a", "b", "c"])
+
+    def test_duplicates_collapse(self):
+        self.assertEqual(
+            self._collect({"SERPAPI_KEYS": "a,b", "SERPAPI_KEY": "a"}), ["a", "b"]
+        )
+
+    def test_no_keys_yields_empty(self):
+        self.assertEqual(self._collect({}), [])

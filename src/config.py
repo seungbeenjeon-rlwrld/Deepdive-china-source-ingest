@@ -208,13 +208,21 @@ class ClaudeCliSettings:
 
 @dataclass
 class SerpApiSettings:
-    api_key: str | None = None
+    # Several keys may be supplied; the client rotates to the next one when a
+    # key's monthly quota is exhausted. Useful for a team where each member has
+    # their own key, or a paid key with a free one as backstop.
+    api_keys: list[str] = field(default_factory=list)
     timeout_seconds: int = 120
     simplified_chinese_only: bool = True
 
     @property
+    def api_key(self) -> str | None:
+        """The first key. Kept so existing call sites and logs still work."""
+        return self.api_keys[0] if self.api_keys else None
+
+    @property
     def has_credentials(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_keys)
 
 
 @dataclass
@@ -246,6 +254,41 @@ class Config:
     def _resolve(self, value: str | Path) -> Path:
         p = Path(value).expanduser()
         return p if p.is_absolute() else (self.project_root / p).resolve()
+
+
+def _collect_serpapi_keys() -> list[str]:
+    """Gather SerpApi keys in a deterministic order, de-duplicated.
+
+    Accepts either a comma-separated ``SERPAPI_KEYS`` or numbered variables
+    (``SERPAPI_KEY``, ``SERPAPI_KEY_2``, ``SERPAPI_KEY_3``, ...). Numbered
+    variables are read in order so rotation is predictable across runs.
+    """
+    keys: list[str] = []
+
+    for raw in (os.getenv("SERPAPI_KEYS") or "").split(","):
+        candidate = raw.strip()
+        if candidate:
+            keys.append(candidate)
+
+    primary = (os.getenv("SERPAPI_KEY") or "").strip()
+    if primary:
+        keys.append(primary)
+
+    index = 2
+    while True:
+        value = (os.getenv(f"SERPAPI_KEY_{index}") or "").strip()
+        if not value:
+            break
+        keys.append(value)
+        index += 1
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for key in keys:
+        if key not in seen:
+            seen.add(key)
+            ordered.append(key)
+    return ordered
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -320,7 +363,7 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
 
     serp_cfg = data.get("serpapi", {})
     serpapi = SerpApiSettings(
-        api_key=os.getenv("SERPAPI_KEY") or None,
+        api_keys=_collect_serpapi_keys(),
         timeout_seconds=int(serp_cfg.get("timeout_seconds", 120)),
         simplified_chinese_only=bool(serp_cfg.get("simplified_chinese_only", True)),
     )

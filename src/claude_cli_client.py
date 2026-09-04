@@ -35,6 +35,30 @@ from .provider import (
 )
 from .utils import get_logger
 
+# The installer puts the binary here and warns that it may not be on PATH, so
+# look for it rather than failing on a fresh install.
+FALLBACK_PATHS = (
+    "~/.local/bin/claude",
+    "~/.claude/local/claude",
+    "/usr/local/bin/claude",
+    "/opt/homebrew/bin/claude",
+)
+
+# The CLI reports some failures on stdout with **exit code 0** — measured:
+# "Not logged in · Please run /login" exits 0. Checking the return code alone
+# would store that string as research output, so the text is screened too.
+# Only applied to short outputs; real stage output runs to thousands of chars.
+_FAILURE_MARKERS = (
+    "not logged in",
+    "please run /login",
+    "invalid api key",
+    "credit balance is too low",
+    "usage limit reached",
+    "rate limit",
+    "authentication_error",
+)
+_FAILURE_SCAN_LIMIT = 600
+
 INSTALL_HINT = (
     "Install it with:  curl -fsSL https://claude.ai/install.sh | bash\n"
     "  Then check it is on PATH and authenticated:  claude --version"
@@ -50,15 +74,38 @@ class ClaudeCliProvider(ResearchProvider):
         self.settings = settings
         self.log = get_logger()
 
-        self.binary = settings.binary or "claude"
-        resolved = shutil.which(self.binary)
-        if resolved is None:
-            raise ProviderError(
-                f"the Claude CLI ({self.binary!r}) was not found on PATH.",
-                hint=INSTALL_HINT + "\n  Or set provider to zhipu / mock instead.",
-            )
-        self.binary = resolved
+        self.binary = self._resolve(settings.binary or "claude")
         self.log.debug("claude cli: %s", self.binary)
+
+    @staticmethod
+    def _resolve(binary: str) -> str:
+        """Find the CLI on PATH, then at the installer's known locations."""
+        import os
+
+        found = shutil.which(binary)
+        if found:
+            return found
+        if os.sep in binary:  # an explicit path was given and does not exist
+            raise ProviderError(
+                f"the Claude CLI was not found at {binary!r}.", hint=INSTALL_HINT
+            )
+        for candidate in FALLBACK_PATHS:
+            path = os.path.expanduser(candidate)
+            if os.access(path, os.X_OK):
+                return path
+        raise ProviderError(
+            f"the Claude CLI ({binary!r}) was not found on PATH or at "
+            f"{', '.join(FALLBACK_PATHS)}.",
+            hint=INSTALL_HINT + "\n  Or set provider to zhipu / mock instead.",
+        )
+
+    @staticmethod
+    def _failure_in_output(text: str) -> Optional[str]:
+        """Detect a CLI error reported on stdout with a zero exit code."""
+        if len(text) > _FAILURE_SCAN_LIMIT:
+            return None
+        lowered = text.lower()
+        return next((m for m in _FAILURE_MARKERS if m in lowered), None)
 
     @property
     def supports_search(self) -> bool:
@@ -118,6 +165,22 @@ class ClaudeCliProvider(ResearchProvider):
                 )
             raise ProviderError(
                 f"claude cli failed for {label or 'request'}: {detail[:400]}", hint=hint
+            )
+
+        # Exit code 0 is not proof of success for this CLI.
+        marker = self._failure_in_output(text)
+        if marker:
+            hint = "Run `claude` once interactively and complete /login, then retry."
+            if "limit" in marker:
+                hint = (
+                    "Subscription allowance reached. This provider shares your "
+                    "interactive Claude Code limit — wait, or switch to "
+                    "provider: zhipu for this run."
+                )
+            raise ProviderError(
+                f"claude cli reported a failure on stdout for {label or 'request'} "
+                f"(exit 0, matched {marker!r}): {text[:200]}",
+                hint=hint,
             )
 
         if not text:
