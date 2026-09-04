@@ -399,6 +399,9 @@ Baidu       → 새로운 정보 발견
 
 ## 14. 설치 및 실행
 
+> 처음 쓰는 사람은 **[HANDOFF.md](HANDOFF.md)** 를 볼 것.
+> 클론부터 Claude 딥다이브까지 전 과정이 단계별로 정리되어 있음.
+
 ### 설치
 
 ```bash
@@ -481,4 +484,11 @@ python -m unittest discover tests -v
 
 ---
 
-기술적 세부 구현과 측정 근거는 [README.en.md](README.en.md) 참조.
+## 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| **[HANDOFF.md](HANDOFF.md)** | **처음 쓰는 사람용 전체 절차** — 클론 → 키 발급 → 수집 → Claude 딥다이브 |
+| [CLAUDE.md](CLAUDE.md) | Claude가 코퍼스를 읽을 때의 규칙. 저장소에서 Claude Code를 열면 자동 적용됨 |
+| [README.en.md](README.en.md) | 기술 세부 구현, 측정 근거, 엔드포인트 스펙 |
+| `prompts/` | 수집 단계용 프롬프트 2개 (분석용이 아님) |
