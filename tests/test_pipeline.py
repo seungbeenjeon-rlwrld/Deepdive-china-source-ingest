@@ -1468,3 +1468,81 @@ class TestNoSilentFetchSkips(unittest.TestCase):
             self.assertIn("too short", meta["fetch_failures"][0]["error"])
         finally:
             h.cleanup()
+
+
+class TestInteractiveChannelPrompts(unittest.TestCase):
+    """A fully interactive run must not silently skip the extra channels."""
+
+    def _run_main(self, stdin_lines, argv):
+        import builtins
+        import io
+        import sys as _sys
+
+        import research as cli
+
+        answers = iter(stdin_lines)
+        real_input = builtins.input
+        builtins.input = lambda *a: next(answers)
+        out = io.StringIO()
+        real_stdout = _sys.stdout
+        _sys.stdout = out
+        try:
+            code = cli.main(argv)
+        finally:
+            builtins.input = real_input
+            _sys.stdout = real_stdout
+        return code, out.getvalue()
+
+    def test_channels_are_asked_when_company_is_prompted(self):
+        import tempfile
+        from pathlib import Path
+
+        cfg = Path(tempfile.mkdtemp()) / "c.yaml"
+        cfg.write_text(
+            "provider: mock\n"
+            f"output: {{root_dir: {Path(tempfile.mkdtemp())}}}\n"
+            "research:\n"
+            "  stage1_prompt: ./prompts/prompt1_entity_discovery.md\n"
+            "  stage2_prompt: ./prompts/prompt2_source_collection.md\n"
+            "  retrieval_injection: {enabled: false}\n"
+            "search_sweep: {enabled: false}\n"
+            "repost_resolution: {enabled: false}\n"
+            "official_site: {enabled: false, index_url: null}\n"
+            "registries: {filings_search_key: null, patent_assignee: null}\n",
+            encoding="utf-8",
+        )
+        code, out = self._run_main(
+            ["TestCorp", "", "", ""], ["--config", str(cfg)]
+        )
+        self.assertEqual(code, 0)
+        # all three prompts shown
+        self.assertIn("공식 뉴스룸", out)
+        self.assertIn("거래소 공시", out)
+        self.assertIn("특허 출원인", out)
+        # skipping everything must tell the user how to add channels later
+        self.assertIn("추가 수집 없음", out)
+        self.assertIn("--official-site", out)
+
+    def test_channels_are_not_asked_when_company_is_a_flag(self):
+        import tempfile
+        from pathlib import Path
+
+        cfg = Path(tempfile.mkdtemp()) / "c.yaml"
+        cfg.write_text(
+            "provider: mock\n"
+            f"output: {{root_dir: {Path(tempfile.mkdtemp())}}}\n"
+            "research:\n"
+            "  stage1_prompt: ./prompts/prompt1_entity_discovery.md\n"
+            "  stage2_prompt: ./prompts/prompt2_source_collection.md\n"
+            "  retrieval_injection: {enabled: false}\n"
+            "search_sweep: {enabled: false}\n"
+            "repost_resolution: {enabled: false}\n"
+            "official_site: {enabled: false, index_url: null}\n"
+            "registries: {filings_search_key: null, patent_assignee: null}\n",
+            encoding="utf-8",
+        )
+        # No stdin available: scripted use must never block on a prompt.
+        code, out = self._run_main([], ["--company", "TestCorp", "--config", str(cfg)])
+        self.assertEqual(code, 0)
+        self.assertNotIn("공식 뉴스룸", out)
+        self.assertIn("조사 대상: TestCorp", out)

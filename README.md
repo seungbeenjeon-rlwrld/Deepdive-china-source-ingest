@@ -431,10 +431,30 @@ Tencent Cloud(`TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY`)도 지원하나, 중�
 
 ### 실행
 
+인자 없이 실행하면 필요한 값을 순서대로 물어봄. 이게 기본 사용법임.
+
 ```bash
-python research.py                              # 대화형
-python research.py --company "智元机器人"         # 비대화형
-python research.py --company "X" --provider mock  # 오프라인 테스트, 키 불필요
+python research.py
+```
+
+```
+조사할 회사명을 입력하세요.
+> 智元机器人
+
+추가 수집 채널 (선택) — 모르면 Enter 로 건너뛰세요.
+1) 공식 뉴스룸 목록 URL
+> https://www.agibot.com.cn/article/315
+2) 거래소 공시 조회용 상장사명
+> 上纬新材
+3) 특허 출원인 법인명
+> 上海智元新创技术有限公司
+```
+
+스크립트로 돌릴 때는 플래그로 지정함 (이때는 묻지 않음):
+
+```bash
+python research.py --company "智元机器人" --official-site "..." --filings "..."
+python research.py --company "X" --provider mock   # 오프라인 테스트, 키 불필요
 ```
 
 전수 열거 채널까지 사용:
