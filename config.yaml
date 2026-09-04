@@ -1,0 +1,128 @@
+# Behaviour lives here; credentials live in .env (never commit .env).
+provider: zhipu            # tencent | zhipu | mock
+
+output:
+  root_dir: ./research
+  save_markdown: true
+  save_json: true
+  save_raw_response: true
+  save_raw_sources: true
+
+research:
+  stage1_prompt: ./prompts/prompt1_entity_discovery.md
+  stage2_prompt: ./prompts/prompt2_source_collection.md
+  # Soft guard. If prompt 2 + the full stage 1 result exceeds this, we warn
+  # loudly but still send everything — stage 1 output is never truncated.
+  max_context_chars: 120000
+
+  # Retrieval WE run, injected into the stage prompts. This replaces a
+  # provider's own search tool, which is typically a paid add-on (Zhipu's is
+  # $0.01/use and is refused at zero balance). Two advantages beyond cost:
+  # it uses the Baidu index (measured 79% domains a Western index misses), and
+  # the exact evidence handed to the model is written to disk, so a downstream
+  # reader can check what the model could and could not have seen.
+  retrieval_injection:
+    enabled: true
+    seed_queries:
+      - "{company}"
+      - "{company} 工商 法定代表人 注册资本"
+      - "{company} 子公司 分公司 合资"
+      - "{company} 产品 型号 发布"
+      - "{company} 融资 股东 估值"
+      - "{company} 客户 合作 订单"
+    results_per_query: 20
+    max_results: 60
+    chars_per_result: 220
+
+tencent:
+  # Hunyuan ChatCompletions. Do NOT use hunyuan-lite: it has no
+  # search-enhancement capability, so the research prompts cannot run.
+  model: hunyuan-turbos-latest
+  region: ap-guangzhou
+  temperature: 0.4
+  timeout_seconds: 900
+  enable_enhancement: true         # EnableEnhancement — turns on AI search
+  force_search_enhancement: true   # ForceSearchEnhancement
+  citation: true                   # Citation — inline citation markers
+  search_info: true                # SearchInfo — return structured citations
+  enable_multimedia: true          # EnableMultimedia — video/视频号 results
+  enable_speed_search: false       # keep false: depth matters more than latency
+
+# Z.ai (Zhipu) — international platform, email signup + Bearer API key.
+# Use this when a China-site Tencent Cloud account is not available.
+zhipu:
+  model: glm-4.7-flash        # free model; glm-5.3 is the strongest
+  # The built-in web_search tool is a PAID add-on ($0.01/use) and is refused on
+  # a zero-balance account. Leave false and let research.retrieval_injection
+  # supply Baidu results instead.
+  use_builtin_search: false
+  base_url: https://api.z.ai/api/paas/v4
+  temperature: 0.4
+  timeout_seconds: 900
+  max_tokens: 32768
+  thinking: false             # true = enable GLM chain-of-thought
+  search_engine: search_pro_jina   # engine for the chat web_search tool
+  search_api_engine: search-prime  # engine for the standalone /web_search
+  content_size: high          # medium | high — high returns longer summaries
+  require_search: true        # force the model to actually search
+  search_count: 20
+  search_recency: null        # null | oneDay | oneWeek | oneMonth | oneYear
+
+# Polite HTTP fetching for article bodies. Identifies itself, rate-limits and
+# honours robots.txt. Never aimed at hosts that gate automated access (WeChat
+# serves a verification page; that is reported, not circumvented).
+fetch:
+  user_agent: "china-research/0.1 (research source-collection tool)"
+  delay_seconds: 1.5
+  timeout_seconds: 30
+  max_bytes: 3000000
+  respect_robots: true
+
+# The company's own newsroom. A primary source (prompt 2 §10 priority 2) that
+# carries much of the same material the company posts to WeChat — and unlike
+# WeChat it serves full text to a normal request. Needs a per-company URL, so
+# pass it with --official-site or set index_url here.
+official_site:
+  enabled: false
+  index_url: null              # e.g. https://www.agibot.com.cn/article/315
+  page_param: page
+  max_pages: 3
+  max_articles: 40
+  detail_pattern: '/detail/\d+\.html'
+
+# For sources whose original is gated (WeChat), find a readable repost. The
+# repost is saved as its OWN source linked to the original; the original's
+# URL_ONLY label is never overwritten.
+repost_resolution:
+  enabled: true
+  max_sources: 10
+
+# Primary-source registries — prompt 2 §10 priorities 1 and 5, and the thing a
+# chat window genuinely cannot do: enumerate the complete set rather than
+# surfacing two or three hits. Both endpoints are open; no Chinese account.
+registries:
+  filings_search_key: null      # listed entity for 巨潮资讯网, e.g. 上纬新材
+  patent_assignee: null         # legal entity, e.g. 上海智元新创技术有限公司
+  max_filings: 60
+  max_patents: 60
+
+# Second evidence channel: structured search over the queries stage 1
+# recommended. SearchPro on Tencent, /web_search on Z.ai. Both honour
+# site_filters, so mp.weixin.qq.com works either way.
+search_sweep:
+  enabled: true
+  # Which provider runs the sweep. null = the main provider above.
+  # Set to `serpapi` to sweep the BAIDU index while stages 1-2 run on a chat
+  # provider. Measured on AgiBot: 4 Baidu queries returned 49 domains, 39 of
+  # them (79%) absent from a Claude-web-search corpus for the same company —
+  # including ccgp.gov.cn (政府采购), 爱企查/天眼查, Baidu B2B, 雪球/股吧 and
+  # regional government sites.
+  provider: serpapi
+  max_queries: 12
+  results_per_query: 20
+  mode: 2                # 0 = web results, 1 = VR cards, 2 = mixed
+  freshness: null        # e.g. y2 = last two years, m3 = last three months
+  site_filters:
+    - null                 # unrestricted
+    - mp.weixin.qq.com     # WeChat Official Account articles
+  industries: []         # e.g. [gov, acad, news, finance]

@@ -1,0 +1,19 @@
+# Credentials — never commit
+.env
+
+# Collected research corpus. It is local evidence, often large, and is meant to
+# be read in place by a downstream Claude process. Delete this line if you do
+# want to version a particular corpus.
+research/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.probe/
+*.egg-info/
+
+# OS
+.DS_Store
