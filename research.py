@@ -25,7 +25,7 @@ from src import __version__
 from src.config import load_config
 from src.models import RunMetadata
 from src.pipeline import Pipeline, extract_recommended_queries
-from src.storage import LocalStorageBackend, STAGE1_JSON, STAGE1_MD
+from src.storage import LocalStorageBackend, STAGE1_JSON, STAGE1_MD, STAGE2_JSON
 from src.provider import ProviderError, build_provider
 from src.utils import (
     add_file_handler,
@@ -37,6 +37,10 @@ from src.utils import (
     slugify,
     utc_now_iso,
 )
+
+class _SkipStage2(Exception):
+    """Control flow only: --stage channels leaves stage 2 alone."""
+
 
 BANNER = """========================================
  Deepdive — China Source Ingest
@@ -61,9 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--company", help="target company name (prompted for if omitted)")
     parser.add_argument(
         "--stage",
-        choices=["1", "2", "all"],
+        choices=["1", "2", "all", "channels"],
         default="all",
-        help="which stage to run (default: all)",
+        help="which stage to run (default: all). 'channels' runs only the "
+             "collection channels (newsroom, filings, patents, sweep) against a "
+             "saved run, leaving stages 1-2 untouched.",
     )
     parser.add_argument(
         "--resume",
@@ -103,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-search-sweep",
         action="store_true",
         help="skip the structured search sweep over stage 1's recommended queries",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="allow overwriting a stage 2 result that already completed",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="print detailed logs to stderr")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -246,6 +257,22 @@ def main(argv: list[str] | None = None) -> int:
 
     stage1_only = args.stage == "1"
     stage2_only = args.stage == "2"
+    channels_only = args.stage == "channels"
+
+    if channels_only and resume_dir is None:
+        latest = find_latest_run(config.research_root, company)
+        if latest is None:
+            report_error(
+                FileNotFoundError(
+                    f"--stage channels needs an existing run; none found under "
+                    f"{config.research_root / slugify(company)}"
+                )
+            )
+            return 2
+        say()
+        say(f"Using the most recent run: {latest}")
+        storage.attach_run(latest)
+        resume_dir = latest
 
     # Stage 2 alone with no --resume: fall back to the newest saved stage 1.
     if stage2_only and resume_dir is None:
@@ -310,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
             model=provider.describe().get("model"),
             tool_version=__version__,
         )
+        prior_stage2_status = None
     else:
         run_dir = resume_dir
         existing = storage.load_metadata() or {}
@@ -324,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         # Preserve what stage 1 already achieved — a stage 2 re-run must not
         # erase a successful stage 1.
+        prior_stage2_status = existing.get("stage2_status")
         metadata.stage1_status = existing.get("stage1_status", "unknown")
         metadata.stage1_request_id = existing.get("stage1_request_id")
         metadata.stage1_usage = existing.get("stage1_usage")
@@ -347,7 +376,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- stage 1 --------------------------------------------------------
     try:
-        if stage2_only:
+        if channels_only:
+            stage1_text, _payload = storage.load_stage1()
+            # prior_stage2_status was captured before metadata was rewritten.
+            metadata.stage2_status = prior_stage2_status or "unknown"
+            say()
+            say(f"Collection channels only — stages 1 and 2 left untouched "
+                f"(stage 2: {metadata.stage2_status}).")
+        elif stage2_only:
             say()
             say("[1/2] Loading saved entity discovery...")
             stage1_text, _payload = storage.load_stage1()
@@ -396,9 +432,37 @@ def main(argv: list[str] | None = None) -> int:
         say("Done.")
         return 0
 
+    if channels_only:
+        stage2_sources = (storage.read_json(STAGE2_JSON) or {}).get("sources") or [] \
+            if storage.exists(STAGE2_JSON) else []
+
     # ---- stage 2 --------------------------------------------------------
+    # A completed stage 2 is expensive and easy to destroy by re-running with a
+    # different config. Refuse unless the caller says so. (Learned the hard way:
+    # a 26,252-char result with 24 sources was overwritten by a 2,519-char one.)
+    # `prior_stage2_status` is read before metadata is rewritten — reading the
+    # file here would always show the freshly written "pending".
+    if (
+        not channels_only
+        and not args.force
+        and prior_stage2_status == "completed"
+        and storage.exists(STAGE2_JSON)
+    ):
+        if True:
+            report_error(
+                RuntimeError(
+                    f"stage 2 already completed in {run_dir} and would be overwritten."
+                )
+            )
+            say("  -> To add collection channels without touching it:")
+            say(f'     python research.py --resume "{run_dir}" --stage channels')
+            say("  -> To deliberately redo stage 2:  add --force")
+            return 2
+
     # From here on, failures must never touch the stage 1 files on disk.
     try:
+        if channels_only:
+            raise _SkipStage2()
         say()
         say("[2/2] Collecting Chinese local sources...")
         stage2 = pipeline.run_stage2(company, stage1_text or "")
@@ -418,6 +482,8 @@ def main(argv: list[str] | None = None) -> int:
         say("Retry stage 2 only, without re-running stage 1:")
         say(f'  python research.py --resume "{run_dir}" --stage 2')
         exit_code = 1
+    except _SkipStage2:
+        pass
     except KeyboardInterrupt:
         metadata.stage2_status = "failed"
         metadata.stage2_error = "interrupted by user"

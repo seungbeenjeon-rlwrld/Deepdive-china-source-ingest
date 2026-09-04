@@ -497,7 +497,8 @@ python research.py --company "智元机器人" \
 | 플래그 | 내용 |
 | --- | --- |
 | `--company NAME` | 대상 회사. 생략 시 입력 요청 |
-| `--stage {1,2,all}` | 실행 단계. 기본 `all` |
+| `--stage {1,2,all,channels}` | 실행 단계. 기본 `all`. `channels` 는 수집 채널만 실행하고 Stage 1·2 를 보존함 |
+| `--force` | 완료된 Stage 2 를 의도적으로 덮어씀 |
 | `--resume RUN_DIR` | 해당 실행의 Stage 1 결과를 재사용 |
 | `--official-site URL` | 공식 뉴스룸 전체 순회 |
 | `--filings LISTED_NAME` | 거래소 공시 전체 조회 (예: `上纬新材`) |

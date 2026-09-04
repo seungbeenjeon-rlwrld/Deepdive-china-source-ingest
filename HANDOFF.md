@@ -205,11 +205,24 @@ cat research/智元机器人/*/metadata.json
 `metadata.json`의 `*_status`가 `completed`인지 확인할 것.
 `failed`가 있으면 `stage2_error` 등에 사유가 있음.
 
-**중간에 실패해도 이미 수집된 것은 남음.** Stage 2만 다시 하려면:
+**중간에 실패해도 이미 수집된 것은 남음.**
+
+Stage 2가 실패했을 때만 다시 실행하려면:
 
 ```bash
 python research.py --resume "research/智元机器人/2026-09-04_120000" --stage 2
 ```
+
+**이미 완료된 Stage 2 는 덮어쓰지 않도록 막혀 있음.** 수집 채널만 추가하려면:
+
+```bash
+python research.py --resume "research/智元机器人/2026-09-04_120000" --stage channels
+```
+
+`--stage channels` 는 공식 뉴스룸·거래소 공시·특허·검색 스윕만 실행하고
+Stage 1·2 는 건드리지 않음. 회사별 세 값을 나중에 알게 됐을 때 쓰는 경로임.
+
+Stage 2 를 의도적으로 다시 만들려면 `--force` 를 붙일 것.
 
 ---
 

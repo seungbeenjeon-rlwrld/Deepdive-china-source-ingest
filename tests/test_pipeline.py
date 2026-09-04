@@ -2033,3 +2033,101 @@ class TestNoNetworkInTests(unittest.TestCase):
             self.assertIn("skipped", result.parsed["retrieval"])
         finally:
             h.cleanup()
+
+
+class TestStage2OverwriteGuard(unittest.TestCase):
+    """A completed stage 2 must not be destroyed by a re-run with a worse config.
+
+    This happened for real: a 26,252-char stage 2 with 24 sources was replaced
+    by a 2,519-char one with 0 sources because a config edit had disabled
+    retrieval. The guard and `--stage channels` exist because of that.
+    """
+
+    def _run(self, argv, stdin=()):
+        import builtins
+        import io
+        import sys as _sys
+
+        import research as cli
+
+        answers = iter(stdin)
+        real_input = builtins.input
+        builtins.input = lambda *a: next(answers)
+        out = io.StringIO()
+        real_stdout = _sys.stdout
+        _sys.stdout = out
+        try:
+            code = cli.main(argv)
+        finally:
+            builtins.input = real_input
+            _sys.stdout = real_stdout
+        return code, out.getvalue()
+
+    def _config(self, root):
+        import tempfile
+        from pathlib import Path
+
+        cfg = Path(tempfile.mkdtemp()) / "c.yaml"
+        cfg.write_text(
+            "provider: mock\n"
+            f"output: {{root_dir: {root}}}\n"
+            "research:\n"
+            "  stage1_prompt: ./prompts/prompt1_entity_discovery.md\n"
+            "  stage2_prompt: ./prompts/prompt2_source_collection.md\n"
+            "  retrieval_injection: {enabled: false, provider: null}\n"
+            "search_sweep: {enabled: false, provider: null}\n"
+            "repost_resolution: {enabled: false}\n"
+            "official_site: {enabled: false, index_url: null}\n"
+            "registries: {filings_search_key: null, patent_assignee: null}\n",
+            encoding="utf-8",
+        )
+        return cfg
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self.root = Path(tempfile.mkdtemp())
+        self.cfg = self._config(self.root)
+        code, _ = self._run(["--company", "AgiBot", "--config", str(self.cfg)])
+        self.assertEqual(code, 0)
+        self.run_dir = sorted((self.root / "agibot").iterdir())[-1]
+
+    def _stage2_size(self):
+        return len(json.loads((self.run_dir / "02_sources.json").read_text("utf-8"))["text"])
+
+    def test_rerunning_stage2_is_refused(self):
+        before = self._stage2_size()
+        code, out = self._run(
+            ["--resume", str(self.run_dir), "--stage", "2", "--config", str(self.cfg)]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("would be overwritten", out)
+        self.assertIn("--stage channels", out)
+        self.assertIn("--force", out)
+        self.assertEqual(self._stage2_size(), before)
+
+    def test_force_allows_a_deliberate_redo(self):
+        code, _ = self._run(
+            ["--resume", str(self.run_dir), "--stage", "2", "--force",
+             "--config", str(self.cfg)]
+        )
+        self.assertEqual(code, 0)
+
+    def test_channels_only_leaves_stage2_untouched(self):
+        before = self._stage2_size()
+        code, out = self._run(
+            ["--resume", str(self.run_dir), "--stage", "channels",
+             "--config", str(self.cfg)]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("left untouched", out)
+        self.assertEqual(self._stage2_size(), before)
+
+    def test_channels_reports_the_real_prior_status(self):
+        """The status is read before metadata is rewritten, or it shows 'pending'."""
+        _code, out = self._run(
+            ["--resume", str(self.run_dir), "--stage", "channels",
+             "--config", str(self.cfg)]
+        )
+        self.assertIn("stage 2: completed", out)
