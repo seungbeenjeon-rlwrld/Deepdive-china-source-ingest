@@ -38,51 +38,67 @@ python -m unittest discover tests
 
 ---
 
-## 2. API 키 발급 — 2개, 성격이 다름
+## 2. LLM 준비 — Claude CLI (권장) 또는 Zhipu
 
-두 키의 역할이 다르므로 **둘 다** 필요함.
+프롬프트를 실행할 LLM이 필요함. 두 방법 중 하나면 됨.
+
+### 방법 A — Claude Code CLI (권장, API 키 불필요)
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+claude --version
+```
+
+처음이면 `claude` 를 한 번 실행해 로그인할 것. 이후 파이프라인이 그 인증을 그대로 씀.
+
+**장점** — 발급받을 키가 SerpApi 하나로 줄고, 어차피 딥다이브 단계에서 Claude Code가
+필요하므로 도구가 하나로 통일됨. 출력 품질도 무료 중국 모델보다 좋음.
+
+**유의** — 대화형 Claude Code와 **같은 사용량 한도를 공유함**. 회사 10개 이상을
+한 번에 돌리면 본인 작업이 느려질 수 있음. 그럴 때는 방법 B로 전환할 것.
+
+### 방법 B — Zhipu (별도 한도, 무료)
+
+<https://z.ai/model-api> 가입 → <https://z.ai/manage-apikey/apikey-list> → `Create API Key`
+
+`.env` 에 `ZHIPU_API_KEY` 를 넣고 `config.yaml` 의 `provider` 를 `zhipu` 로 바꾸거나
+`--provider zhipu` 로 실행함.
+
+무료 모델(`glm-4.7-flash`)은 혼잡할 때 `429`(코드 1305/1113/1302)를 비결정적으로
+반환함. 파이프라인이 최대 7회 백오프 재시도하나, 계속 실패하면 시간을 두거나
+<https://z.ai/manage-apikey/billing> 에서 소액 충전할 것.
+
+## 3. API 키 발급 — Baidu 검색용 1개
 
 | 키 | 하는 일 | 없으면 |
 | --- | --- | --- |
 | `SERPAPI_KEY` | **Baidu 검색** — 중국 로컬 소스 발견 | 중국 인덱스 접근 불가 |
-| `ZHIPU_API_KEY` | **프롬프트 실행** (LLM) — 실체 사전·소스 정리 | Stage 1·2 실행 불가 |
 
-### 2-1. SerpApi (Baidu 검색)
+### 3-1. SerpApi (Baidu 검색)
 
 1. <https://serpapi.com/users/sign_up> — 이메일 가입, 카드 불필요
 2. <https://serpapi.com/manage-api-key> 에서 키 복사
 3. **월 250건 무료.** 회사 1개 수집에 약 10~30건 사용 → 월 8~25개 회사
 
-### 2-2. Z.ai (LLM)
-
-1. <https://z.ai/model-api> — `Register or Login`, 이메일 가입 (중국 전화번호 불필요)
-2. <https://z.ai/manage-apikey/apikey-list> → `Create API Key`
-   - **생성 시 한 번만 전체가 보임.** 그때 복사할 것
-3. 기본 모델은 `glm-4.7-flash`
-
-> **주의:** 무료 티어는 혼잡할 때 `429`(코드 1305/1113/1302)를 비결정적으로 반환함.
-> 파이프라인이 최대 7회 백오프 재시도하나, 계속 실패하면 시간을 두고 재시도하거나
-> <https://z.ai/manage-apikey/billing> 에서 $5~10 충전할 것. 충전하면 안정성과
-> 출력 품질이 모두 개선됨(회사당 몇 센트 수준).
-
-### 2-3. `.env` 작성
+### 3-2. `.env` 작성
 
 ```bash
 cp .env.example .env
 ```
 
-`.env`를 열어 두 줄을 채울 것:
+`.env` 를 열어 채울 것. Claude CLI를 쓰면 **한 줄이면 됨**:
 
 ```
 SERPAPI_KEY=여기에
-ZHIPU_API_KEY=여기에
 ```
+
+Zhipu를 쓸 경우에만 `ZHIPU_API_KEY` 도 채울 것.
 
 `.env`는 `.gitignore`에 있어 커밋되지 않음. **절대 커밋하지 말 것.**
 
 ---
 
-## 3. 동작 확인 (키 소모 없음)
+## 4. 동작 확인 (키 소모 없음)
 
 먼저 mock으로 파이프라인이 도는지 확인:
 
@@ -101,9 +117,9 @@ rm -rf research/testcorp
 
 ---
 
-## 4. 첫 실제 수집
+## 5. 첫 실제 수집
 
-### 4-1. 회사별 세 값 준비
+### 6-1. 회사별 세 값 준비
 
 회사마다 아래 세 가지를 알면 수집 범위가 크게 넓어짐.
 
@@ -116,7 +132,7 @@ rm -rf research/testcorp
 **모르면 비워도 됨.** Stage 1이 법인명을 찾아주므로, 1차 실행 후
 `01_entity_discovery.md`에서 확인하여 2차 실행에 넣는 방식이 편함.
 
-### 4-2. 실행
+### 6-2. 실행
 
 가장 간단한 방법은 **인자 없이 실행**하는 것임. 필요한 값을 순서대로 물어봄.
 
@@ -164,7 +180,7 @@ python research.py --company "智元机器人" \
 
 10~20분 소요됨. 진행 상황이 터미널에 출력됨.
 
-### 4-3. 결과 확인
+### 6-3. 결과 확인
 
 ```bash
 ls research/智元机器人/*/
@@ -182,11 +198,11 @@ python research.py --resume "research/智元机器人/2026-09-04_120000" --stage
 
 ---
 
-## 5. Claude로 딥다이브 — 여기가 본론
+## 6. Claude로 딥다이브 — 여기가 본론
 
 수집은 끝났고, 이제 Claude가 그 코퍼스를 읽고 분석하는 단계임.
 
-### 5-1. 저장소 디렉터리에서 Claude Code를 열 것
+### 6-1. 저장소 디렉터리에서 Claude Code를 열 것
 
 ```bash
 cd Deepdive-china-source-ingest
@@ -199,7 +215,7 @@ claude
 다른 위치에서 열거나 코퍼스 파일만 복사해 가면 그 지침이 적용되지 않아
 **증거 등급을 무시한 분석이 나올 위험이 있음.**
 
-### 5-2. 첫 질문 — 코퍼스 파악
+### 6-2. 첫 질문 — 코퍼스 파악
 
 ```
 research/智元机器人/ 아래 코퍼스를 파악해줘.
@@ -209,7 +225,7 @@ metadata.json과 01_entity_discovery.md를 먼저 읽고,
 
 Claude가 전체를 읽지 않고 `grep`으로 탐색함(코퍼스 1개가 컨텍스트 창을 넘기므로).
 
-### 5-3. 실제 분석 요청 예시
+### 6-3. 실제 분석 요청 예시
 
 **공급망 분석**
 
@@ -250,7 +266,7 @@ research/ 아래 수집된 회사들을 비교해줘.
 비교 가능한 항목만 넣고 한쪽에 자료가 없으면 "자료 없음"으로 표시해줘.
 ```
 
-### 5-4. Claude에게 요구할 것 / 요구하지 말 것
+### 6-4. Claude에게 요구할 것 / 요구하지 말 것
 
 **요구할 것**
 
@@ -267,7 +283,7 @@ research/ 아래 수집된 회사들을 비교해줘.
 
 `CLAUDE.md`가 이 규칙을 이미 지시하고 있으나, 명시적으로 다시 요구하면 더 확실함.
 
-### 5-5. 자료가 부족할 때
+### 6-5. 자료가 부족할 때
 
 분석 중 부족한 부분이 나오면, Claude에게 직접 웹검색시키지 말고
 **파이프라인으로 재수집하는 편이 좋음.** 그래야 증거 등급이 붙고 다음 사람도 같은 자료를 봄.
@@ -280,7 +296,7 @@ python research.py --company "智元机器人" --official-site "..." --filings "
 
 ---
 
-## 6. 새 회사 추가
+## 7. 새 회사 추가
 
 ### 매번 플래그를 쓰지 않으려면
 
@@ -308,10 +324,13 @@ python research.py --company "..." --config config.local.yaml
 
 ---
 
-## 7. 자주 겪는 문제
+## 8. 자주 겪는 문제
 
 | 증상 | 원인 / 대응 |
 | --- | --- |
+| `the Claude CLI ('claude') was not found on PATH` | CLI 미설치. 안내된 설치 명령 실행 또는 `--provider zhipu` |
+| `claude cli failed ... Not logged in` | `claude` 를 한 번 실행해 로그인할 것 |
+| `claude cli failed ... usage limit` | 구독 한도 소진. 시간을 두거나 `--provider zhipu` |
 | `ZHIPU_API_KEY is not set` | `.env` 미작성 또는 저장소 루트가 아닌 곳에서 실행 |
 | `429 ... 1305/1113/1302` 반복 | Zhipu 무료 티어 혼잡. 시간 두고 재시도하거나 소액 충전 |
 | `429 monthly quota` (SerpApi) | 월 250건 소진. <https://serpapi.com/dashboard> 확인 |
@@ -323,7 +342,7 @@ python research.py --company "..." --config config.local.yaml
 
 ---
 
-## 8. 더 읽을 것
+## 9. 더 읽을 것
 
 | 문서 | 내용 |
 | --- | --- |

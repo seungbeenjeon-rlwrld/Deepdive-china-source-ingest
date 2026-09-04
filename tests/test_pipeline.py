@@ -1546,3 +1546,132 @@ class TestInteractiveChannelPrompts(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("공식 뉴스룸", out)
         self.assertIn("조사 대상: TestCorp", out)
+
+
+class TestClaudeCliProvider(unittest.TestCase):
+    """Shells out to `claude -p`; every failure mode must be legible."""
+
+    def _provider(self, **overrides):
+        from src.claude_cli_client import ClaudeCliProvider
+        from src.config import ClaudeCliSettings
+
+        p = ClaudeCliProvider.__new__(ClaudeCliProvider)
+        p.settings = ClaudeCliSettings(**overrides)
+        p.binary = "/usr/bin/true"
+        p.log = __import__("logging").getLogger("test")
+        return p
+
+    def _stub_run(self, provider, *, stdout="", stderr="", returncode=0, timeout=False):
+        import subprocess as sp
+
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["input"] = kwargs.get("input")
+            if timeout:
+                raise sp.TimeoutExpired(argv, 1)
+            return type("C", (), {"stdout": stdout, "stderr": stderr,
+                                  "returncode": returncode})()
+
+        import src.claude_cli_client as mod
+        mod.subprocess.run = fake_run
+        return captured
+
+    def setUp(self):
+        import subprocess
+
+        import src.claude_cli_client as mod
+        self._real_run = mod.subprocess.run
+        self.addCleanup(lambda: setattr(mod.subprocess, "run", self._real_run))
+
+    def test_missing_binary_gives_install_instructions(self):
+        from src.claude_cli_client import ClaudeCliProvider
+        from src.config import ClaudeCliSettings
+        from src.provider import ProviderError
+
+        with self.assertRaises(ProviderError) as ctx:
+            ClaudeCliProvider(ClaudeCliSettings(binary="definitely-not-a-real-binary"))
+        self.assertIn("install.sh", ctx.exception.hint)
+
+    def test_prompt_goes_through_stdin_not_argv(self):
+        """A 30k-char prompt must not be passed as a command-line argument."""
+        p = self._provider()
+        captured = self._stub_run(p, stdout="결과")
+        prompt = "字" * 30000
+        p.run_research(prompt, label="stage1")
+        self.assertEqual(captured["input"], prompt)
+        self.assertNotIn(prompt, captured["argv"])
+        self.assertIn("-p", captured["argv"])
+
+    def test_tools_are_disabled_so_retrieval_stays_auditable(self):
+        p = self._provider(disallowed_tools="WebSearch,WebFetch")
+        captured = self._stub_run(p, stdout="ok")
+        p.run_research("x", label="stage1")
+        self.assertIn("--disallowedTools", captured["argv"])
+        self.assertIn("WebSearch,WebFetch", captured["argv"])
+
+    def test_model_is_passed_when_set(self):
+        p = self._provider(model="opus")
+        captured = self._stub_run(p, stdout="ok")
+        p.run_research("x")
+        self.assertIn("--model", captured["argv"])
+        self.assertIn("opus", captured["argv"])
+
+    def test_successful_output_is_returned_verbatim(self):
+        p = self._provider()
+        self._stub_run(p, stdout="  ## A. 실체\n내용  ")
+        r = p.run_research("x", label="stage1")
+        self.assertEqual(r.text, "## A. 실체\n내용")
+        self.assertEqual(r.provider, "claude-cli")
+        self.assertEqual(r.finish_reason, "stop")
+
+    def test_auth_failure_gets_an_actionable_hint(self):
+        from src.provider import ProviderError
+
+        p = self._provider()
+        self._stub_run(p, stderr="Not logged in. Please authenticate.", returncode=1)
+        with self.assertRaises(ProviderError) as ctx:
+            p.run_research("x")
+        self.assertIn("authenticate", ctx.exception.hint)
+
+    def test_quota_failure_points_at_the_shared_allowance(self):
+        from src.provider import ProviderError
+
+        p = self._provider()
+        self._stub_run(p, stderr="usage limit reached", returncode=1)
+        with self.assertRaises(ProviderError) as ctx:
+            p.run_research("x")
+        self.assertIn("shares your", ctx.exception.hint)
+
+    def test_timeout_is_reported_as_timeout(self):
+        from src.provider import TimeoutError_
+
+        p = self._provider(timeout_seconds=5)
+        self._stub_run(p, timeout=True)
+        with self.assertRaises(TimeoutError_):
+            p.run_research("x")
+
+    def test_empty_output_is_an_error_not_a_silent_pass(self):
+        from src.provider import EmptyResponseError
+
+        p = self._provider()
+        self._stub_run(p, stdout="   ", stderr="something odd")
+        with self.assertRaises(EmptyResponseError):
+            p.run_research("x")
+
+    def test_stderr_on_success_becomes_a_warning(self):
+        p = self._provider()
+        self._stub_run(p, stdout="결과", stderr="deprecation notice")
+        r = p.run_research("x")
+        self.assertTrue(any("stderr" in w for w in r.warnings))
+
+    def test_search_is_declined_so_the_sweep_uses_serpapi(self):
+        p = self._provider()
+        self.assertFalse(p.supports_search)
+        out = p.search("q")
+        self.assertFalse(out["supported"])
+        self.assertIn("serpapi", out["note"])
+
+    def test_describe_states_the_shared_allowance_tradeoff(self):
+        self.assertIn("subscription allowance", self._provider().describe()["note"])

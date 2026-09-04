@@ -354,6 +354,10 @@ def build_provider(name: str, config: Any) -> ResearchProvider:
         from .zhipu_client import ZhipuProvider
 
         return ZhipuProvider(config.zhipu)
+    if key in ("claude-cli", "claude_cli", "cli"):
+        from .claude_cli_client import ClaudeCliProvider
+
+        return ClaudeCliProvider(config.claude_cli)
     if key == "serpapi":
         from .serpapi_client import SerpApiBaiduProvider
 
@@ -363,5 +367,5 @@ def build_provider(name: str, config: Any) -> ResearchProvider:
 
     raise ProviderError(
         f"Unknown provider {name!r}.",
-        hint="Supported providers: tencent, zhipu, serpapi, mock.",
+        hint="Supported providers: claude-cli, zhipu, tencent, serpapi, mock.",
     )

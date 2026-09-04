@@ -105,6 +105,19 @@ DEFAULTS: dict[str, Any] = {
     },
     # For sources whose original is gated, find a readable repost instead.
     "repost_resolution": {"enabled": True, "max_sources": 10},
+    # Claude Code CLI as the LLM. No API key — uses the local CLI's existing
+    # authentication. Shares the interactive subscription allowance.
+    "claude_cli": {
+        "binary": "claude",
+        "model": None,              # None = the CLI's own default
+        "timeout_seconds": 900,
+        # Retrieval is injected by the pipeline, so the CLI's own tools are not
+        # needed. Restricting them keeps runs reproducible and stops unlogged
+        # searches from leaking into the evidence trail.
+        "disallowed_tools": "WebSearch,WebFetch",
+        "extra_args": [],
+        "cwd": None,
+    },
     # SerpApi — programmatic access to the Baidu index. Search-only.
     "serpapi": {
         "timeout_seconds": 120,          # Baidu queries routinely take 15-30s
@@ -179,6 +192,21 @@ class ZhipuSettings:
 
 
 @dataclass
+class ClaudeCliSettings:
+    binary: str = "claude"
+    model: str | None = None
+    timeout_seconds: int = 900
+    disallowed_tools: str | None = "WebSearch,WebFetch"
+    extra_args: list[str] = field(default_factory=list)
+    cwd: str | None = None
+
+    @property
+    def has_credentials(self) -> bool:
+        # The CLI carries its own auth; nothing for us to hold.
+        return True
+
+
+@dataclass
 class SerpApiSettings:
     api_key: str | None = None
     timeout_seconds: int = 120
@@ -202,6 +230,7 @@ class Config:
     tencent: TencentSettings
     zhipu: ZhipuSettings
     serpapi: SerpApiSettings
+    claude_cli: ClaudeCliSettings
     project_root: Path
     source_file: Path | None = None
     raw: dict[str, Any] = field(default_factory=dict)
@@ -296,11 +325,21 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
         simplified_chinese_only=bool(serp_cfg.get("simplified_chinese_only", True)),
     )
 
+    cli_cfg = data.get("claude_cli", {})
+    claude_cli = ClaudeCliSettings(
+        binary=os.getenv("CLAUDE_CLI_BINARY") or cli_cfg.get("binary") or "claude",
+        model=os.getenv("CLAUDE_CLI_MODEL") or cli_cfg.get("model") or None,
+        timeout_seconds=int(cli_cfg.get("timeout_seconds", 900)),
+        disallowed_tools=cli_cfg.get("disallowed_tools") or None,
+        extra_args=list(cli_cfg.get("extra_args") or []),
+        cwd=cli_cfg.get("cwd") or None,
+    )
+
     provider = str(data.get("provider", "tencent")).strip().lower()
-    if provider not in ("tencent", "zhipu", "serpapi", "mock"):
+    if provider not in ("tencent", "zhipu", "serpapi", "claude-cli", "mock"):
         raise ValueError(
             f"unknown provider {provider!r} in config — "
-            "expected tencent, zhipu, serpapi or mock"
+            "expected tencent, zhipu, serpapi, claude-cli or mock"
         )
 
     return Config(
@@ -315,6 +354,7 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
         tencent=tencent,
         zhipu=zhipu,
         serpapi=serpapi,
+        claude_cli=claude_cli,
         project_root=root,
         source_file=source_file,
         raw=data,

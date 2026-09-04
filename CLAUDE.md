@@ -169,6 +169,9 @@ python research.py --resume research/智元机器人/2026-09-04_034201 --stage 2
 
 - 테스트를 먼저 확인할 것: `python -m unittest discover tests`
 - 새 provider는 `ResearchProvider` 서브클래스 + `build_provider()` 등록
+- 기본 provider는 `claude-cli` 임. 즉 파이프라인이 로컬 `claude` 를 서브프로세스로
+  호출함. 이 세션 안에서 `python research.py` 를 돌리면 Claude가 중첩 호출됨 —
+  동작하지만 사용량이 두 배로 나가므로, 대량 실행은 별도 터미널에서 할 것
 - 새 저장 대상은 `StorageBackend` 서브클래스
 - **증거 라벨 규칙을 완화하지 말 것.** `verify_labels()`가 모델의 과장을 강등하는 것은 실측된 문제
   (스니펫 100자를 `VERBATIM_PARTIAL_TEXT`로 라벨한 사례)에 대한 대응임

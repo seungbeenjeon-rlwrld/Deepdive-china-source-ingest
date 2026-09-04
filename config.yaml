@@ -1,5 +1,5 @@
 # Behaviour lives here; credentials live in .env (never commit .env).
-provider: zhipu            # tencent | zhipu | mock
+provider: claude-cli       # claude-cli | zhipu | tencent | mock
 
 output:
   root_dir: ./research
@@ -47,6 +47,20 @@ tencent:
   search_info: true                # SearchInfo — return structured citations
   enable_multimedia: true          # EnableMultimedia — video/视频号 results
   enable_speed_search: false       # keep false: depth matters more than latency
+
+# Claude Code CLI as the LLM. No API key needed — uses the CLI's own
+# authentication. Requires `claude` on PATH:
+#   curl -fsSL https://claude.ai/install.sh | bash
+#
+# Trade-off: this shares your interactive Claude Code subscription allowance,
+# so a large batch can slow your own session. For scheduled bulk runs prefer a
+# metered provider.
+claude_cli:
+  binary: claude
+  model: null                              # null = the CLI's default model
+  timeout_seconds: 900
+  disallowed_tools: "WebSearch,WebFetch"   # retrieval is injected; keep runs reproducible
+  extra_args: []
 
 # Z.ai (Zhipu) — international platform, email signup + Bearer API key.
 # Use this when a China-site Tencent Cloud account is not available.

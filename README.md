@@ -420,14 +420,24 @@ Python 3.10 이상 필요함.
 cp .env.example .env
 ```
 
-두 종류의 키가 필요함. 성격이 다르므로 둘 다 있어야 전체가 동작함.
+**검색**과 **프롬프트 실행**은 서로 다른 도구가 담당함. 둘 다 필요함.
 
-| 변수 | 용도 | 발급 |
+### 검색 — SerpApi (Baidu)
+
+| 변수 | 발급 |
+| --- | --- |
+| `SERPAPI_KEY` | [serpapi.com/manage-api-key](https://serpapi.com/manage-api-key) — 이메일 가입, 월 250건 무료, 카드 불필요 |
+
+### 프롬프트 실행 — 아래 중 하나
+
+| provider | 준비 | 특징 |
 | --- | --- | --- |
-| `SERPAPI_KEY` | **Baidu 검색** (검색 전용, 프롬프트 실행 불가) | [serpapi.com/manage-api-key](https://serpapi.com/manage-api-key) — 이메일 가입, 월 250건 무료, 카드 불필요 |
-| `ZHIPU_API_KEY` | **Stage 1·2 프롬프트 실행** (LLM) | [z.ai/manage-apikey/apikey-list](https://z.ai/manage-apikey/apikey-list) — 이메일 가입, 중국 전화번호 불필요 |
+| **`claude-cli`** (기본) | `curl -fsSL https://claude.ai/install.sh \| bash` | **API 키 불필요.** 대화형 Claude Code와 사용량 한도를 공유함 |
+| `zhipu` | `ZHIPU_API_KEY` — [z.ai](https://z.ai/manage-apikey/apikey-list) | 별도 한도, 무료 모델 있음. 혼잡 시 `429` 재시도 필요 |
+| `tencent` | `TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY` | 위챗 커버리지 최상이나 **중국 신분증·법인 필요**. 미검증 |
 
-Tencent Cloud(`TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY`)도 지원하나, 중국 본토 신분증·港澳台 통행증·중국 사업자등록증 중 하나가 필요하여 실제 검증되지 않았음.
+기본값은 `claude-cli` 임. 발급받을 키가 SerpApi 하나로 줄고, 딥다이브 단계에서
+어차피 Claude Code가 필요하므로 도구가 하나로 통일됨.
 
 ### 실행
 

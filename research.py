@@ -71,7 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="reuse the stage 1 result saved in this run directory instead of re-running it",
     )
     parser.add_argument(
-        "--provider", choices=["tencent", "zhipu", "mock"], help="override config provider"
+        "--provider",
+        choices=["claude-cli", "zhipu", "tencent", "serpapi", "mock"],
+        help="override config provider",
     )
     parser.add_argument("--config", help="path to a config file (default: ./config.yaml)")
     parser.add_argument(
