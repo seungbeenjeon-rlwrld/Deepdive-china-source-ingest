@@ -52,8 +52,19 @@ class Harness:
         self.tmp = Path(tempfile.mkdtemp())
         self.config = load_config(project_root=PROJECT_ROOT)
         self.config.output = {**self.config.output, "root_dir": str(self.tmp)}
-        # Pin the sweep to the harness provider; config.yaml may point elsewhere.
+        # Pin every search path to the harness provider. config.yaml points
+        # retrieval and the sweep at serpapi, and leaving that in place made the
+        # test suite issue real Baidu queries — 10 of the user's monthly quota
+        # before it was caught. Tests must never touch the network.
         self.config.search_sweep = {**self.config.search_sweep, "provider": None}
+        self.config.research = {
+            **self.config.research,
+            "retrieval_injection": {
+                **(self.config.research.get("retrieval_injection") or {}),
+                "enabled": False,
+                "provider": None,
+            },
+        }
         self.storage = LocalStorageBackend(self.tmp)
         self.run_dir = self.storage.create_run(company)
         self.metadata = RunMetadata(
@@ -1920,3 +1931,105 @@ class TestSerpApiKeyCollection(unittest.TestCase):
 
     def test_no_keys_yields_empty(self):
         self.assertEqual(self._collect({}), [])
+
+
+class TestRetrievalIndependentOfSweep(unittest.TestCase):
+    """Regression: turning the sweep off once disabled prompt retrieval too.
+
+    Stage 2 then ran blind and could only restructure stage 1's evidence —
+    the model itself reported "本轮 Stage 2 新发现 0 条".
+    """
+
+    def _harness(self):
+        from src.provider import citation
+
+        class SearchProvider(MockProvider):
+            name = "serpapi"  # stand in for the real search provider
+
+            def search(self, query, **kwargs):
+                return {"query": query, "supported": True, "raw": None,
+                        "pages": [citation(title="t", url="https://news.qq.com/a/1",
+                                           content="摘要")]}
+
+        h = Harness(MockProvider())
+        h._searcher = SearchProvider()
+        # build_provider is not reachable for a stub name, so preload the cache.
+        h.pipeline._search_cache = {"serpapi": h._searcher}
+        h.config.research = {**h.config.research, "retrieval_injection": {
+            "enabled": True, "provider": "serpapi", "seed_queries": ["{company}"],
+            "results_per_query": 5, "max_results": 5, "chars_per_result": 200,
+            "fetch_pages": False}}
+        return h
+
+    def test_retrieval_still_runs_when_the_sweep_is_disabled(self):
+        h = self._harness()
+        try:
+            h.config.search_sweep = {**h.config.search_sweep,
+                                     "enabled": False, "provider": None}
+            block, meta = h.pipeline.build_retrieval_block("AgiBot", ["q"])
+            self.assertIsNotNone(block)
+            self.assertEqual(meta["results"], 1)
+            self.assertNotIn("skipped", meta)
+        finally:
+            h.cleanup()
+
+    def test_retrieval_falls_back_to_the_sweep_provider(self):
+        h = self._harness()
+        try:
+            h.config.research["retrieval_injection"]["provider"] = None
+            h.config.search_sweep = {**h.config.search_sweep, "provider": "serpapi"}
+            block, meta = h.pipeline.build_retrieval_block("AgiBot", ["q"])
+            self.assertIsNotNone(block)
+        finally:
+            h.cleanup()
+
+    def test_search_incapable_provider_says_how_to_fix_it(self):
+        h = Harness(MockProvider())
+        try:
+            h.config.research = {**h.config.research, "retrieval_injection": {
+                "enabled": True, "provider": None, "seed_queries": ["{company}"]}}
+            h.config.search_sweep = {**h.config.search_sweep, "provider": None}
+
+            class NoSearch(MockProvider):
+                @property
+                def supports_search(self):
+                    return False
+
+            h.pipeline.provider = NoSearch()
+            _block, meta = h.pipeline.build_retrieval_block("AgiBot", ["q"])
+            self.assertIn("skipped", meta)
+            self.assertIn("retrieval_injection.provider", meta["hint"])
+        finally:
+            h.cleanup()
+
+
+class TestNoNetworkInTests(unittest.TestCase):
+    """The suite must not issue real API calls. It did once; this guards it."""
+
+    def test_harness_pins_every_search_path_off(self):
+        h = Harness(MockProvider())
+        try:
+            self.assertIsNone(h.config.search_sweep.get("provider"))
+            ri = h.config.research["retrieval_injection"]
+            self.assertFalse(ri["enabled"])
+            self.assertIsNone(ri["provider"])
+        finally:
+            h.cleanup()
+
+    def test_harness_pipeline_builds_no_network_provider(self):
+        h = Harness(MockProvider())
+        try:
+            # Both resolvers must return the harness's own mock, never a real client.
+            self.assertIs(h.pipeline._retrieval_provider(), h.pipeline.provider)
+            self.assertIs(h.pipeline._sweep_provider(), h.pipeline.provider)
+            self.assertEqual(h.pipeline._search_cache, {})
+        finally:
+            h.cleanup()
+
+    def test_stage1_makes_no_retrieval_call_in_tests(self):
+        h = Harness(MockProvider())
+        try:
+            result = h.pipeline.run_stage1("AgiBot")
+            self.assertIn("skipped", result.parsed["retrieval"])
+        finally:
+            h.cleanup()

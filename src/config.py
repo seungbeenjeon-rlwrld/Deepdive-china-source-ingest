@@ -35,6 +35,10 @@ DEFAULTS: dict[str, Any] = {
         "verify_labels": True,
         "retrieval_injection": {
             "enabled": True,
+            # Independent of search_sweep on purpose: disabling the sweep must
+            # not silently blind the stage prompts. None = fall back to
+            # search_sweep.provider.
+            "provider": "serpapi",
             "seed_queries": [
                 "{company}",
                 "{company} 工商 法定代表人 注册资本",

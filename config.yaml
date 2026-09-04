@@ -23,6 +23,9 @@ research:
   # reader can check what the model could and could not have seen.
   retrieval_injection:
     enabled: true
+    # 검색을 담당할 provider. search_sweep 과 독립적임 — sweep 을 끄더라도
+    # 프롬프트 주입 검색은 계속 동작해야 하기 때문. null 이면 search_sweep.provider 를 씀.
+    provider: serpapi
     seed_queries:
       - "{company}"
       - "{company} 工商 法定代表人 注册资本"

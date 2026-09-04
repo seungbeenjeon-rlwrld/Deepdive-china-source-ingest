@@ -129,7 +129,7 @@ class Pipeline:
         self.log = get_logger()
         self._progress = progress or (lambda _msg: None)
         self._fetcher: Optional[Fetcher] = None
-        self._sweep_cache: Optional[ResearchProvider] = None
+        self._search_cache: dict[str, ResearchProvider] = {}
 
     def _get_fetcher(self) -> Fetcher:
         if self._fetcher is None:
@@ -151,15 +151,30 @@ class Pipeline:
         sources. This lets stages 1-2 use a chat provider while the sweep uses
         Baidu.
         """
-        name = (self.config.search_sweep.get("provider") or "").strip().lower()
+        return self._search_provider(self.config.search_sweep.get("provider"))
+
+    def _retrieval_provider(self) -> ResearchProvider:
+        """Search provider for prompt injection.
+
+        Deliberately independent of ``search_sweep``. They were coupled once and
+        turning the sweep off silently disabled retrieval injection too, so
+        stage 2 ran blind and could only restructure stage 1's evidence. Falls
+        back to the sweep's provider so the common case needs no extra config.
+        """
+        cfg = self.config.research.get("retrieval_injection") or {}
+        name = cfg.get("provider") or self.config.search_sweep.get("provider")
+        return self._search_provider(name)
+
+    def _search_provider(self, name: Optional[str]) -> ResearchProvider:
+        name = (name or "").strip().lower()
         if not name or name == self.provider.name:
             return self.provider
-        if self._sweep_cache is None:
+        if name not in self._search_cache:
             from .provider import ProviderError, build_provider
 
             try:
-                self._sweep_cache = build_provider(name, self.config)
-                self.log.info("sweep provider: %s", self._sweep_cache.name)
+                self._search_cache[name] = build_provider(name, self.config)
+                self.log.info("search provider: %s", name)
             except ProviderError as exc:
                 # A missing sweep credential must not sink a run whose stages 1
                 # and 2 already succeeded. Fall back and say so.
@@ -168,10 +183,11 @@ class Pipeline:
                     name, exc, self.provider.name,
                 )
                 self.metadata.notes.append(
-                    f"search sweep fell back from {name!r} to {self.provider.name!r}: {exc}"
+                    f"search provider fell back from {name!r} to "
+                    f"{self.provider.name!r}: {exc}"
                 )
-                self._sweep_cache = self.provider
-        return self._sweep_cache
+                self._search_cache[name] = self.provider
+        return self._search_cache[name]
 
     def _next_source_index(self) -> int:
         return int(self.metadata.counts.get("raw_source_files", 0)) + 1
@@ -338,7 +354,7 @@ class Pipeline:
             return self.provider.search(title, count=10).get("pages", [])
 
         official_index = self.config.official_site.get("index_url")
-        official_hosts = []
+        official_hosts: list[str] = []
         if official_index:
             from urllib.parse import urlparse as _urlparse
             official_hosts.append(_urlparse(official_index).netloc)
@@ -459,9 +475,12 @@ class Pipeline:
         if not cfg.get("enabled", True):
             return None, {"skipped": "retrieval_injection disabled"}
 
-        searcher = self._sweep_provider()
+        searcher = self._retrieval_provider()
         if not searcher.supports_search:
-            return None, {"skipped": f"provider {searcher.name} has no structured search"}
+            return None, {
+                "skipped": f"provider {searcher.name} has no structured search",
+                "hint": "set research.retrieval_injection.provider to serpapi",
+            }
 
         per_query = int(cfg.get("results_per_query", 20))
         cap = int(cfg.get("max_results", 60))
