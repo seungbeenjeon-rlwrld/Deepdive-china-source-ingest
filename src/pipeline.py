@@ -12,6 +12,7 @@ Stage 1 output is never summarised, trimmed or re-ordered before injection.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,7 @@ from .storage import (
     SWEEP_MD,
     md_document,
 )
+NAMES_JSON, NAMES_MD = "00_name_resolution.json", "00_name_resolution.md"
 OFFICIAL_JSON, OFFICIAL_MD = "04_official_site.json", "04_official_site.md"
 FILINGS_JSON, FILINGS_MD = "06_exchange_filings.json", "06_exchange_filings.md"
 PATENTS_JSON, PATENTS_MD = "07_patents.json", "07_patents.md"
@@ -459,6 +461,91 @@ class Pipeline:
             )
         return prompt
 
+    # -- stage 0: expand one global name into Chinese search names ---------
+    def resolve_names(self, company: str) -> dict[str, Any]:
+        """Turn the single name the user typed into names worth searching.
+
+        The user supplies one global (usually English) name. Searching a Chinese
+        index with that alone both misses and misleads — measured on "AgiBot",
+        Baidu returned agibot.net (AGIBOT敏捷机器人, a surgical-robotics company)
+        alongside the intended one. Expanding to the Chinese brand and legal
+        entity names first is what makes every later query land.
+
+        The names are **candidates**, not facts. Stage 1 verifies them against
+        sources; this step only decides what to look for.
+        """
+        cfg = self.config.research.get("name_resolution") or {}
+        if not cfg.get("enabled", True):
+            return {"skipped": "name_resolution disabled", "search_names": [company]}
+
+        path = self.config.prompt_path(0)
+        if not path.is_file():
+            self.log.warning("name-resolution prompt missing at %s — using the raw name", path)
+            return {"skipped": f"prompt not found: {path}", "search_names": [company]}
+
+        self._progress("[0/2] Resolving Chinese names...")
+        prompt = path.read_text(encoding="utf-8").replace(TARGET_TOKEN, company)
+
+        try:
+            response = self.provider.run_research(prompt, label="stage0")
+        except ProviderError as exc:
+            # Never fatal: fall back to the raw name and say so.
+            self.log.warning("name resolution failed (%s) — using the raw name", exc)
+            self.metadata.notes.append(f"name resolution failed: {exc}")
+            return {"error": str(exc), "search_names": [company]}
+
+        parsed = _parse_json_object(response.text)
+        if parsed is None:
+            self.log.warning("name resolution returned unparseable output — using the raw name")
+            self.metadata.notes.append("name resolution output was not valid JSON")
+            return {
+                "error": "output was not valid JSON",
+                "raw_text": response.text,
+                "search_names": [company],
+            }
+
+        names = [n for n in (parsed.get("search_names") or []) if isinstance(n, str) and n.strip()]
+        # Always keep what the user typed: it is the one name we know they meant.
+        if company not in names:
+            names.insert(0, company)
+        limit = int(cfg.get("max_names", 8))
+
+        result = {
+            **parsed,
+            "input_name": company,
+            "search_names": names[:limit],
+            "search_names_dropped": names[limit:],
+            "provider": response.provider,
+            "model": response.model,
+            "generated_at": utc_now_iso(),
+            "raw_text": response.text,
+            "note": (
+                "These are search candidates produced by a model, not verified facts. "
+                "Stage 1 checks them against sources. 'collisions' lists same-name "
+                "companies that are NOT the target."
+            ),
+        }
+
+        chinese = [n for n in result["search_names"] if any("\u4e00" <= ch <= "\u9fff" for ch in n)]
+        self._progress(
+            f"      {len(result['search_names'])} search names "
+            f"({len(chinese)} Chinese), {len(parsed.get('collisions') or [])} name collision(s)"
+        )
+        if not chinese:
+            self.metadata.notes.append(
+                "name resolution produced no Chinese names; Chinese-index recall will be poor"
+            )
+
+        if self.config.output.get("save_json", True):
+            self.storage.save_json(NAMES_JSON, result)
+        if self.config.output.get("save_markdown", True):
+            self.storage.save(NAMES_MD, _names_markdown(company, result))
+
+        self.metadata.counts["search_names"] = len(result["search_names"])
+        self.metadata.counts["name_collisions"] = len(parsed.get("collisions") or [])
+        self.storage.write_metadata(self.metadata)
+        return result
+
     # -- retrieval we control, injected into the stage prompts -------------
     def build_retrieval_block(
         self, company: str, queries: list[str]
@@ -589,10 +676,30 @@ class Pipeline:
         }
         return "\n".join(lines), meta
 
-    def _seed_queries(self, company: str) -> list[str]:
+    def _seed_queries(self, company: str, names: Optional[list[str]] = None) -> list[str]:
+        """Cross the query templates with every resolved name.
+
+        One English name yields one weak query set; the Chinese brand and legal
+        entity names are what reach 工商, 招投标 and 公众号 content. Capped so a
+        long name list cannot blow the search budget.
+        """
         cfg = self.config.research.get("retrieval_injection") or {}
         templates = cfg.get("seed_queries") or ["{company}"]
-        return [t.replace("{company}", company) for t in templates]
+        pool = [n for n in (names or [company]) if n] or [company]
+        cap = int(cfg.get("max_seed_queries", 8))
+
+        queries: list[str] = []
+        # Name-major order: the best name gets every template before the next
+        # name is tried, so truncation loses the weakest names, not the best
+        # query types.
+        for name in pool:
+            for template in templates:
+                query = template.replace("{company}", name)
+                if query not in queries:
+                    queries.append(query)
+            if len(queries) >= cap:
+                break
+        return queries[:cap]
 
     @staticmethod
     def _with_retrieval(prompt: str, block: Optional[str]) -> str:
@@ -616,9 +723,31 @@ class Pipeline:
         self.metadata.stage1_status = "running"
         self.storage.write_metadata(self.metadata)
 
+        names_meta = self.resolve_names(company)
+        search_names = names_meta.get("search_names") or [company]
+
+        self._progress("[1/2] Discovering company entities...")
         base_prompt = self.build_stage1_prompt(company)
+        if len(search_names) > 1:
+            # Tell stage 1 what the retrieval was built from, and that the names
+            # are candidates it must verify rather than accept.
+            base_prompt += (
+                "\n\n---\n\n以下名称候选由上一步生成，用于构建本次检索；"
+                "它们**尚未经过验证**，请在你的 Entity / Alias Dictionary 中逐一核实：\n"
+                + "\n".join(f"- {n}" for n in search_names)
+            )
+            collisions = names_meta.get("collisions") or []
+            if collisions:
+                base_prompt += (
+                    "\n\n已知同名但可能无关的实体（请勿与目标公司合并）：\n"
+                    + "\n".join(
+                        f"- {c.get('name')}：{c.get('note', '')}"
+                        for c in collisions if isinstance(c, dict)
+                    )
+                )
+
         block, retrieval_meta = self.build_retrieval_block(
-            company, self._seed_queries(company)
+            company, self._seed_queries(company, search_names)
         )
         prompt = self._with_retrieval(base_prompt, block)
         self.log.info(
@@ -660,6 +789,7 @@ class Pipeline:
             "generated_at": utc_now_iso(),
             "prompt_chars": len(prompt),
             "retrieval": retrieval_meta,
+            "name_resolution": names_meta,
         }
 
         files = self._persist_stage(
@@ -670,7 +800,10 @@ class Pipeline:
             md_name=STAGE1_MD,
             json_name=STAGE1_JSON,
             raw_name=RAW_STAGE1,
-            extra_header=[f"- recommended_queries_found: {len(parsed['recommended_queries'])}"],
+            extra_header=[
+                f"- recommended_queries_found: {len(parsed['recommended_queries'])}",
+                f"- search_names_used: {len(search_names)}",
+            ],
         )
 
         self.metadata.stage1_status = "completed"
@@ -1497,4 +1630,76 @@ def _records_markdown(title: str, payload: dict[str, Any], records: list[SourceR
             lines.append(f"- reposts_source_id: {record.extra['reposts_source_id']}")
             lines.append(f"- original_url: {record.extra.get('original_url')}")
         lines += ["", "```text", record.content or "", "```", ""]
+    return "\n".join(lines) + "\n"
+
+
+def _parse_json_object(text: str) -> Optional[dict[str, Any]]:
+    """Pull the first JSON object out of a model response.
+
+    Models wrap JSON in code fences even when told not to, and sometimes add a
+    sentence before it. Try the whole string, then the outermost braces.
+    """
+    candidates = [text.strip()]
+
+    fenced = re.search(r"```(?:json)?\s*(.+?)```", text, re.S)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _names_markdown(company: str, result: dict[str, Any]) -> str:
+    lines = [
+        f"# Stage 0 — Name Resolution: {company}",
+        "",
+        f"- input_name: {result.get('input_name')}",
+        f"- canonical_english: {result.get('canonical_english')}",
+        f"- provider: {result.get('provider')}",
+        f"- generated_at: {result.get('generated_at')}",
+        "",
+        f"> {result.get('note', '')}",
+        "",
+        "## Search names used (in order)",
+        "",
+    ]
+    lines += [f"{i}. {n}" for i, n in enumerate(result.get("search_names") or [], 1)]
+    if result.get("search_names_dropped"):
+        lines += ["", "### Not used (over max_names)", ""]
+        lines += [f"- {n}" for n in result["search_names_dropped"]]
+
+    chinese = result.get("chinese_names") or []
+    if chinese:
+        lines += ["", "## Chinese names", "",
+                  "| Name | Type | Confidence | Note |", "| --- | --- | --- | --- |"]
+        for entry in chinese:
+            if isinstance(entry, dict):
+                lines.append(
+                    f"| {entry.get('name')} | {entry.get('type')} | "
+                    f"{entry.get('confidence')} | {entry.get('note', '')} |"
+                )
+
+    if result.get("english_variants"):
+        lines += ["", "## English variants", "",
+                  ", ".join(str(v) for v in result["english_variants"])]
+
+    collisions = result.get("collisions") or []
+    if collisions:
+        lines += ["", "## Name collisions — NOT the target company", ""]
+        for entry in collisions:
+            if isinstance(entry, dict):
+                lines.append(f"- **{entry.get('name')}** — {entry.get('note', '')}")
+
+    if result.get("raw_text"):
+        lines += ["", "## Raw model output", "", "```json", result["raw_text"], "```"]
     return "\n".join(lines) + "\n"

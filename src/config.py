@@ -23,6 +23,7 @@ DEFAULTS: dict[str, Any] = {
         "save_raw_sources": True,
     },
     "research": {
+        "stage0_prompt": "./prompts/prompt0_name_resolution.md",
         "stage1_prompt": "./prompts/prompt1_entity_discovery.md",
         "stage2_prompt": "./prompts/prompt2_source_collection.md",
         # Soft guard only: we warn, we never silently truncate evidence.
@@ -30,6 +31,10 @@ DEFAULTS: dict[str, Any] = {
         # Retrieval we control, injected into the stage prompts. This replaces
         # a provider's own (often paid) search tool: it is free, it uses the
         # Baidu index, and the exact evidence given to the model is logged.
+        # Expand the one global name the user typed into Chinese search names.
+        # Without this, a Chinese index both misses the company and returns
+        # same-name companies instead.
+        "name_resolution": {"enabled": True, "max_names": 8},
         # Check the model's CONTENT_ACCESS_STATUS claims against the retrieval
         # actually injected. Downgrades only; never upgrades.
         "verify_labels": True,
@@ -248,8 +253,10 @@ class Config:
     raw: dict[str, Any] = field(default_factory=dict)
 
     def prompt_path(self, stage: int) -> Path:
-        key = "stage1_prompt" if stage == 1 else "stage2_prompt"
-        return self._resolve(self.research[key])
+        key = {0: "stage0_prompt", 1: "stage1_prompt", 2: "stage2_prompt"}[stage]
+        return self._resolve(
+            self.research.get(key) or DEFAULTS["research"][key]
+        )
 
     @property
     def research_root(self) -> Path:

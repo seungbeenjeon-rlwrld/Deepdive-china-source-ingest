@@ -9,6 +9,7 @@ output:
   save_raw_sources: true
 
 research:
+  stage0_prompt: ./prompts/prompt0_name_resolution.md
   stage1_prompt: ./prompts/prompt1_entity_discovery.md
   stage2_prompt: ./prompts/prompt2_source_collection.md
   # Soft guard. If prompt 2 + the full stage 1 result exceeds this, we warn
@@ -21,6 +22,13 @@ research:
   # it uses the Baidu index (measured 79% domains a Western index misses), and
   # the exact evidence handed to the model is written to disk, so a downstream
   # reader can check what the model could and could not have seen.
+  # 사용자가 입력한 하나의 글로벌 이름을 중국어 검색명으로 확장함.
+  # 영어 이름만으로 중국 인덱스를 검색하면 해당 회사를 놓치고 동명이인 회사가
+  # 나옴 — "AgiBot" 검색 시 수술로봇 회사 AGIBOT敏捷机器人 이 함께 반환됨.
+  name_resolution:
+    enabled: true
+    max_names: 8
+
   retrieval_injection:
     enabled: true
     # 검색을 담당할 provider. search_sweep 과 독립적임 — sweep 을 끄더라도
@@ -33,6 +41,7 @@ research:
       - "{company} 产品 型号 发布"
       - "{company} 融资 股东 估值"
       - "{company} 客户 合作 订单"
+    max_seed_queries: 8
     results_per_query: 20
     max_results: 60
     chars_per_result: 220

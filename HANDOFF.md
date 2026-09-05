@@ -38,37 +38,40 @@ python -m unittest discover tests
 
 ---
 
-## 2. LLM 준비 — Claude CLI (권장) 또는 Zhipu
-
-프롬프트를 실행할 LLM이 필요함. 두 방법 중 하나면 됨.
-
-### 방법 A — Claude Code CLI (권장, API 키 불필요)
+## 2. Claude Code CLI 설치 — LLM 담당, API 키 불필요
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash
+```
+
+설치 후 PATH 에 추가할 것 (설치 스크립트가 경고를 냄):
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+```
+
+처음이면 한 번 실행해 로그인할 것. 이후 파이프라인이 그 인증을 그대로 씀.
+
+```bash
+claude
+```
+
+폴더 신뢰 확인이 뜨면 `Yes, I trust this folder` 를 선택하고, 로그인 안내가 나오면
+브라우저로 인증한 뒤 `/exit` 로 나올 것.
+
+확인:
+
+```bash
 claude --version
 ```
 
-처음이면 `claude` 를 한 번 실행해 로그인할 것. 이후 파이프라인이 그 인증을 그대로 씀.
+> **유의** — 이 방식은 대화형 Claude Code 와 **같은 사용량 한도를 공유함**.
+> 회사를 여러 개 연속으로 돌리면 본인 작업이 느려질 수 있음. 그럴 때는 잠시 뒤
+> 다시 실행할 것.
 
-**장점** — 발급받을 키가 SerpApi 하나로 줄고, 어차피 딥다이브 단계에서 Claude Code가
-필요하므로 도구가 하나로 통일됨. 출력 품질도 무료 중국 모델보다 좋음.
+## 3. API 키 발급 — SerpApi 하나
 
-**유의** — 대화형 Claude Code와 **같은 사용량 한도를 공유함**. 회사 10개 이상을
-한 번에 돌리면 본인 작업이 느려질 수 있음. 그럴 때는 방법 B로 전환할 것.
-
-### 방법 B — Zhipu (별도 한도, 무료)
-
-<https://z.ai/model-api> 가입 → <https://z.ai/manage-apikey/apikey-list> → `Create API Key`
-
-`.env` 에 `ZHIPU_API_KEY` 를 넣고 `config.yaml` 의 `provider` 를 `zhipu` 로 바꾸거나
-`--provider zhipu` 로 실행함.
-
-무료 모델(`glm-4.7-flash`)은 혼잡할 때 `429`(코드 1305/1113/1302)를 비결정적으로
-반환함. 파이프라인이 최대 7회 백오프 재시도하나, 계속 실패하면 시간을 두거나
-<https://z.ai/manage-apikey/billing> 에서 소액 충전할 것.
-
-## 3. API 키 발급 — Baidu 검색용 1개
+Baidu 검색용임. 발급받을 키는 이것뿐임.
 
 | 키 | 하는 일 | 없으면 |
 | --- | --- | --- |
@@ -101,17 +104,13 @@ SERPAPI_KEY_3=키3
 cp .env.example .env
 ```
 
-`.env` 를 열어 채울 것. Claude CLI를 쓰면 **한 줄이면 됨**:
+`.env` 를 열어 한 줄만 채울 것:
 
 ```
 SERPAPI_KEY=여기에
 ```
 
-Zhipu를 쓸 경우에만 `ZHIPU_API_KEY` 도 채울 것.
-
-`.env`는 `.gitignore`에 있어 커밋되지 않음. **절대 커밋하지 말 것.**
-
----
+LLM 은 Claude CLI 가 담당하므로 다른 키는 필요 없음.
 
 ## 4. 동작 확인 (키 소모 없음)
 
@@ -161,8 +160,7 @@ python research.py
 ========================================
 
 조사할 회사명을 입력하세요.
-  중국어 회사명이 가장 정확합니다. 예: 智元机器人
-> 智元机器人
+> AgiBot
 
 ────────────────────────────────────────
 추가 수집 채널 (선택) — 모르면 Enter 로 건너뛰세요.
@@ -356,11 +354,10 @@ python research.py --company "..." --config config.local.yaml
 
 | 증상 | 원인 / 대응 |
 | --- | --- |
-| `the Claude CLI ('claude') was not found on PATH` | CLI 미설치. 안내된 설치 명령 실행 또는 `--provider zhipu` |
+| `the Claude CLI ('claude') was not found on PATH` | CLI 미설치. 2절의 설치 명령 실행 |
 | `claude cli failed ... Not logged in` | `claude` 를 한 번 실행해 로그인할 것 |
-| `claude cli failed ... usage limit` | 구독 한도 소진. 시간을 두거나 `--provider zhipu` |
-| `ZHIPU_API_KEY is not set` | `.env` 미작성 또는 저장소 루트가 아닌 곳에서 실행 |
-| `429 ... 1305/1113/1302` 반복 | Zhipu 무료 티어 혼잡. 시간 두고 재시도하거나 소액 충전 |
+| `claude cli failed ... usage limit` | 구독 한도 소진. 시간을 두고 재실행 |
+| `claude cli failed ... ENOTFOUND` | 네트워크·DNS 일시 오류. 재실행하면 됨 |
 | `429 monthly quota` (SerpApi) | 월 250건 소진. <https://serpapi.com/dashboard> 확인 |
 | 공시 0건인데 회사는 상장사 | cninfo 504(일시적). 재시도 로직이 있으나 계속되면 잠시 후 다시 |
 | 특허 0건 + `503 throttled` | Google Patents 스로틀. 시간 두고 재시도. 안정성 필요 시 EPO OPS 검토 |

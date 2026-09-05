@@ -137,7 +137,6 @@ def prompt_company() -> str:
     say(BANNER)
     say()
     say("조사할 회사명을 입력하세요.")
-    say("  중국어 회사명이 가장 정확합니다. 예: 智元机器人")
     try:
         value = input("> ").strip()
     except EOFError:
@@ -393,7 +392,8 @@ def main(argv: list[str] | None = None) -> int:
             say(f"✓ Loaded stage 1 result ({len(stage1_text):,} chars)")
         else:
             say()
-            say("[1/2] Discovering company entities...")
+            # run_stage1 emits "[0/2] Resolving Chinese names..." itself, so the
+            # stage 1 banner is printed after that step, not before it.
             result = pipeline.run_stage1(company)
             stage1_text = result.response.text
             say("✓ Entity discovery complete")

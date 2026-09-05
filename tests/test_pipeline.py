@@ -142,7 +142,8 @@ class TestStageContextPassing(unittest.TestCase):
             s2 = h.pipeline.run_stage2("AgiBot", s1.response.text)
             self.assertEqual(s2.parsed["stage1_context_chars"], len(s1.response.text))
             self.assertGreater(s2.parsed["stage1_context_chars"], 0)
-            self.assertEqual(provider.calls, ["stage1", "stage2"])
+            # stage0 resolves the Chinese search names before stage 1 retrieves.
+            self.assertEqual(provider.calls, ["stage0", "stage1", "stage2"])
         finally:
             h.cleanup()
 
@@ -2131,3 +2132,171 @@ class TestStage2OverwriteGuard(unittest.TestCase):
              "--config", str(self.cfg)]
         )
         self.assertIn("stage 2: completed", out)
+
+
+class TestNameResolution(unittest.TestCase):
+    """The user types one global name; the system must find the Chinese ones.
+
+    Measured motivation: searching Baidu for "AgiBot" alone returns
+    agibot.net — AGIBOT敏捷机器人, a surgical-robotics company — alongside the
+    intended one. Without expansion, queries both miss and mislead.
+    """
+
+    NAMES_JSON = {
+        "canonical_english": "AgiBot",
+        "chinese_names": [
+            {"name": "智元机器人", "type": "brand", "confidence": "high", "note": ""},
+            {"name": "上海智元新创技术有限公司", "type": "legal_entity",
+             "confidence": "high", "note": ""},
+        ],
+        "english_variants": ["AGIBOT", "Zhiyuan Robotics"],
+        "search_names": ["智元机器人", "上海智元新创技术有限公司", "AgiBot"],
+        "collisions": [{"name": "AGIBOT敏捷机器人", "note": "手术机器人公司，无关"}],
+        "note": "",
+    }
+
+    def _harness(self, output):
+        class NameProvider(MockProvider):
+            def run_research(self, prompt, *, label=""):
+                if label == "stage0":
+                    r = super().run_research(prompt, label=label)
+                    r.text = output
+                    return r
+                return super().run_research(prompt, label=label)
+
+        h = Harness(NameProvider())
+        h.config.research = {**h.config.research,
+                             "name_resolution": {"enabled": True, "max_names": 8}}
+        return h
+
+    def test_chinese_names_are_discovered_from_an_english_input(self):
+        h = self._harness(json.dumps(self.NAMES_JSON, ensure_ascii=False))
+        try:
+            result = h.pipeline.resolve_names("AgiBot")
+            self.assertIn("智元机器人", result["search_names"])
+            self.assertIn("上海智元新创技术有限公司", result["search_names"])
+            self.assertEqual(len(result["collisions"]), 1)
+        finally:
+            h.cleanup()
+
+    def test_the_typed_name_is_always_kept(self):
+        payload = {**self.NAMES_JSON, "search_names": ["智元机器人"]}
+        h = self._harness(json.dumps(payload, ensure_ascii=False))
+        try:
+            result = h.pipeline.resolve_names("AgiBot")
+            self.assertIn("AgiBot", result["search_names"])
+        finally:
+            h.cleanup()
+
+    def test_json_in_a_code_fence_is_still_parsed(self):
+        """Models fence JSON even when told not to."""
+        fenced = "여기 결과입니다:\\n```json\\n" + json.dumps(
+            self.NAMES_JSON, ensure_ascii=False) + "\\n```"
+        h = self._harness(fenced)
+        try:
+            result = h.pipeline.resolve_names("AgiBot")
+            self.assertIn("智元机器人", result["search_names"])
+        finally:
+            h.cleanup()
+
+    def test_unparseable_output_falls_back_to_the_typed_name(self):
+        h = self._harness("죄송하지만 JSON을 만들 수 없습니다")
+        try:
+            result = h.pipeline.resolve_names("AgiBot")
+            self.assertEqual(result["search_names"], ["AgiBot"])
+            self.assertIn("error", result)
+            self.assertTrue(any("not valid JSON" in n for n in h.metadata.notes))
+        finally:
+            h.cleanup()
+
+    def test_provider_failure_is_not_fatal(self):
+        from src.provider import ProviderError
+
+        class FailingNames(MockProvider):
+            def run_research(self, prompt, *, label=""):
+                if label == "stage0":
+                    raise ProviderError("simulated stage 0 failure")
+                return super().run_research(prompt, label=label)
+
+        h = Harness(FailingNames())
+        h.config.research = {**h.config.research,
+                             "name_resolution": {"enabled": True, "max_names": 8}}
+        try:
+            result = h.pipeline.resolve_names("AgiBot")
+            self.assertEqual(result["search_names"], ["AgiBot"])
+            # stage 1 must still be able to run
+            stage1 = h.pipeline.run_stage1("AgiBot")
+            self.assertTrue(stage1.response.text)
+        finally:
+            h.cleanup()
+
+    def test_seed_queries_cross_names_with_templates(self):
+        h = self._harness(json.dumps(self.NAMES_JSON, ensure_ascii=False))
+        try:
+            h.config.research["retrieval_injection"] = {
+                **h.config.research["retrieval_injection"],
+                "seed_queries": ["{company}", "{company} 工商"],
+                "max_seed_queries": 8,
+            }
+            queries = h.pipeline._seed_queries(
+                "AgiBot", ["智元机器人", "上海智元新创技术有限公司"]
+            )
+            self.assertIn("智元机器人", queries)
+            self.assertIn("智元机器人 工商", queries)
+            self.assertIn("上海智元新创技术有限公司 工商", queries)
+        finally:
+            h.cleanup()
+
+    def test_seed_queries_are_capped_name_major(self):
+        """Truncation must lose the weakest names, not the best query types."""
+        h = self._harness(json.dumps(self.NAMES_JSON, ensure_ascii=False))
+        try:
+            h.config.research["retrieval_injection"] = {
+                **h.config.research["retrieval_injection"],
+                "seed_queries": ["{company}", "{company} 工商", "{company} 融资"],
+                "max_seed_queries": 3,
+            }
+            queries = h.pipeline._seed_queries("X", ["名前1", "名前2"])
+            self.assertEqual(len(queries), 3)
+            self.assertTrue(all("名前1" in q for q in queries))
+        finally:
+            h.cleanup()
+
+    def test_disabled_resolution_uses_the_typed_name(self):
+        h = self._harness(json.dumps(self.NAMES_JSON, ensure_ascii=False))
+        try:
+            h.config.research["name_resolution"] = {"enabled": False}
+            result = h.pipeline.resolve_names("AgiBot")
+            self.assertEqual(result["search_names"], ["AgiBot"])
+            self.assertIn("skipped", result)
+        finally:
+            h.cleanup()
+
+    def test_stage1_is_told_the_names_are_unverified(self):
+        h = self._harness(json.dumps(self.NAMES_JSON, ensure_ascii=False))
+        try:
+            captured = {}
+            original = h.pipeline.provider.run_research
+
+            def spy(prompt, *, label=""):
+                captured[label] = prompt
+                return original(prompt, label=label)
+
+            h.pipeline.provider.run_research = spy
+            h.pipeline.run_stage1("AgiBot")
+            stage1_prompt = captured["stage1"]
+            self.assertIn("尚未经过验证", stage1_prompt)
+            self.assertIn("智元机器人", stage1_prompt)
+            # collisions must be passed through so stage 1 does not merge them
+            self.assertIn("AGIBOT敏捷机器人", stage1_prompt)
+        finally:
+            h.cleanup()
+
+    def test_no_chinese_names_is_flagged_as_a_recall_risk(self):
+        payload = {**self.NAMES_JSON, "chinese_names": [], "search_names": ["AgiBot"]}
+        h = self._harness(json.dumps(payload, ensure_ascii=False))
+        try:
+            h.pipeline.resolve_names("AgiBot")
+            self.assertTrue(any("no Chinese names" in n for n in h.metadata.notes))
+        finally:
+            h.cleanup()
