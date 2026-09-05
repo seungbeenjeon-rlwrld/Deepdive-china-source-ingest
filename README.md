@@ -486,18 +486,7 @@ SERPAPI_KEY_3=키3
 python research.py
 ```
 
-```
-조사할 회사명을 입력하세요.
-> 智元机器人
 
-추가 수집 채널 (선택) — 모르면 Enter 로 건너뛰세요.
-1) 공식 뉴스룸 목록 URL
-> https://www.agibot.com.cn/article/315
-2) 거래소 공시 조회용 상장사명
-> 上纬新材
-3) 특허 출원인 법인명
-> 上海智元新创技术有限公司
-```
 
 스크립트로 돌릴 때는 플래그로 지정함 (이때는 묻지 않음):
 
@@ -550,7 +539,7 @@ registries:
 python -m unittest discover tests -v
 ```
 
-130개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
+192개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
 
 ---
 
@@ -560,5 +549,4 @@ python -m unittest discover tests -v
 | --- | --- |
 | **[HANDOFF.md](HANDOFF.md)** | **처음 쓰는 사람용 전체 절차** — 클론 → 키 발급 → 수집 → Claude 딥다이브 |
 | [CLAUDE.md](CLAUDE.md) | Claude가 코퍼스를 읽을 때의 규칙. 저장소에서 Claude Code를 열면 자동 적용됨 |
-| [README.en.md](README.en.md) | 기술 세부 구현, 측정 근거, 엔드포인트 스펙 |
 | `prompts/` | 수집 단계용 프롬프트 2개 (분석용이 아님) |

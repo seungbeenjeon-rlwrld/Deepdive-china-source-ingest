@@ -38,10 +38,6 @@ from src.utils import (
     utc_now_iso,
 )
 
-class _SkipStage2(Exception):
-    """Control flow only: --stage channels leaves stage 2 alone."""
-
-
 BANNER = """========================================
  Deepdive — China Source Ingest
 ========================================"""
@@ -422,27 +418,23 @@ def main(argv: list[str] | None = None) -> int:
         and prior_stage2_status == "completed"
         and storage.exists(STAGE2_JSON)
     ):
-        if True:
-            report_error(
-                RuntimeError(
-                    f"stage 2 already completed in {run_dir} and would be overwritten."
-                )
-            )
-            say("  -> To add collection channels without touching it:")
-            say(f'     python research.py --resume "{run_dir}" --stage channels')
-            say("  -> To deliberately redo stage 2:  add --force")
-            return 2
+        report_error(
+            RuntimeError(f"stage 2 already completed in {run_dir} and would be overwritten.")
+        )
+        say("  -> To add collection channels without touching it:")
+        say(f'     python research.py --resume "{run_dir}" --stage channels')
+        say("  -> To deliberately redo stage 2:  add --force")
+        return 2
 
     # From here on, failures must never touch the stage 1 files on disk.
     try:
-        if channels_only:
-            raise _SkipStage2()
-        say()
-        say("[2/2] Collecting Chinese local sources...")
-        stage2 = pipeline.run_stage2(company, stage1_text or "")
-        stage2_sources = stage2.parsed.get("sources") or []
-        say("✓ Source collection complete")
-        say("✓ Results saved")
+        if not channels_only:
+            say()
+            say("[2/2] Collecting Chinese local sources...")
+            stage2 = pipeline.run_stage2(company, stage1_text or "")
+            stage2_sources = stage2.parsed.get("sources") or []
+            say("✓ Source collection complete")
+            say("✓ Results saved")
     except (ProviderError, ValueError, OSError) as exc:
         if metadata.stage2_status != "completed":
             metadata.stage2_status = "failed"
@@ -456,8 +448,6 @@ def main(argv: list[str] | None = None) -> int:
         say("Retry stage 2 only, without re-running stage 1:")
         say(f'  python research.py --resume "{run_dir}" --stage 2')
         exit_code = 1
-    except _SkipStage2:
-        pass
     except KeyboardInterrupt:
         metadata.stage2_status = "failed"
         metadata.stage2_error = "interrupted by user"
