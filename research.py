@@ -146,34 +146,6 @@ def prompt_company() -> str:
     return value
 
 
-def prompt_channels() -> dict[str, Optional[str]]:
-    """Ask for the three per-company values that unlock the extra channels.
-
-    Without these, an interactive run silently skips the newsroom crawl, the
-    exchange-filing index and the patent index — which is most of the corpus.
-    Asking once beats leaving them off by default.
-    """
-    say()
-    say("─" * 40)
-    say("추가 수집 채널 (선택) — 모르면 Enter 로 건너뛰세요.")
-    say("Stage 1 결과의 법인명에서 나중에 찾아 재실행할 수 있습니다.")
-
-    return {
-        "official_site": _ask(
-            "1) 공식 뉴스룸 목록 URL",
-            "회사 홈페이지의 뉴스/新闻资讯 목록 페이지. 예: https://www.agibot.com.cn/article/315",
-        ),
-        "filings": _ask(
-            "2) 거래소 공시 조회용 상장사명",
-            "이 회사가 지배하는 상장사가 있으면. 예: 上纬新材",
-        ),
-        "patents": _ask(
-            "3) 특허 출원인 법인명",
-            "중국어 정식 법인명. 예: 上海智元新创技术有限公司",
-        ),
-    }
-
-
 def find_latest_run(root: Path, company: str) -> Optional[Path]:
     """Newest run directory for a company that has a usable stage 1 result."""
     base = root / slugify(company)
@@ -246,14 +218,6 @@ def main(argv: list[str] | None = None) -> int:
         say()
         say(f"조사 대상: {company}")
 
-    # Fully interactive run: ask for the values the extra channels need, unless
-    # they were already supplied on the command line or in config.
-    if interactive and not args.resume:
-        answers = prompt_channels()
-        args.official_site = args.official_site or answers["official_site"]
-        args.filings = args.filings or answers["filings"]
-        args.patents = args.patents or answers["patents"]
-
     stage1_only = args.stage == "1"
     stage2_only = args.stage == "2"
     channels_only = args.stage == "channels"
@@ -298,24 +262,6 @@ def main(argv: list[str] | None = None) -> int:
         config.official_site = {
             **config.official_site, "enabled": True, "index_url": official_index
         }
-
-    if interactive:
-        planned = [
-            name for name, on in (
-                ("공식 뉴스룸", bool(official_index)),
-                ("거래소 공시", bool(filings_key)),
-                ("특허", bool(patent_assignee)),
-            ) if on
-        ]
-        say()
-        say("─" * 40)
-        if planned:
-            say(f"추가 수집: {', '.join(planned)}")
-        else:
-            say("추가 수집 없음 — Stage 1·2 와 검색 스윕만 실행합니다.")
-            say("나중에 채널을 추가하려면:")
-            say(f'  python research.py --company "{company}" \\')
-            say('    --official-site "<뉴스룸 URL>" --filings "<상장사명>"')
 
     # ---- provider ------------------------------------------------------
     try:
@@ -398,6 +344,34 @@ def main(argv: list[str] | None = None) -> int:
             stage1_text = result.response.text
             say("✓ Entity discovery complete")
             say("✓ Results saved")
+
+            # The three channel inputs are derivable from what stages 0-1 found,
+            # so they are never asked for. Explicit flags still win.
+            derived = pipeline.derive_channels(
+                result.parsed.get("name_resolution") or {}, stage1_text
+            )
+            for key, current, label in (
+                ("official_site", official_index, "공식 뉴스룸"),
+                ("filings_search_key", filings_key, "거래소 공시"),
+                ("patent_assignee", patent_assignee, "특허 출원인"),
+            ):
+                if current or not derived.get(key):
+                    continue
+                value = derived[key]
+                why = (derived.get("evidence") or {}).get(key, "")
+                say(f"  자동 인식 — {label}: {value}")
+                if why:
+                    log.info("derived %s=%r (%s)", key, value, why)
+                if key == "official_site":
+                    official_index = value
+                    config.official_site = {
+                        **config.official_site, "enabled": True, "index_url": value
+                    }
+                elif key == "filings_search_key":
+                    filings_key = value
+                else:
+                    patent_assignee = value
+            metadata.notes.append(f"channels derived automatically: {derived}")
     except (ProviderError, ValueError, OSError) as exc:
         # Covers provider errors and anything raised before the call (e.g. a
         # missing prompt file), so the status can never be left at "running".

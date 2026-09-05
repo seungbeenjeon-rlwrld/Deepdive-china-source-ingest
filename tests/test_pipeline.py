@@ -59,6 +59,7 @@ class Harness:
         self.config.search_sweep = {**self.config.search_sweep, "provider": None}
         self.config.research = {
             **self.config.research,
+            "derive_channels": {"enabled": True, "probe_official_site": False},
             "retrieval_injection": {
                 **(self.config.research.get("retrieval_injection") or {}),
                 "enabled": False,
@@ -1494,8 +1495,13 @@ class TestNoSilentFetchSkips(unittest.TestCase):
             h.cleanup()
 
 
-class TestInteractiveChannelPrompts(unittest.TestCase):
-    """A fully interactive run must not silently skip the extra channels."""
+class TestOnlyCompanyNameIsAsked(unittest.TestCase):
+    """The user supplies one name. Everything else the pipeline works out.
+
+    The three channel inputs (newsroom URL, listed entity, patent assignee) were
+    once interactive questions. That was the same mistake as asking for Chinese
+    names: stages 0-1 already produce them.
+    """
 
     def _run_main(self, stdin_lines, argv):
         import builtins
@@ -1517,7 +1523,7 @@ class TestInteractiveChannelPrompts(unittest.TestCase):
             _sys.stdout = real_stdout
         return code, out.getvalue()
 
-    def test_channels_are_asked_when_company_is_prompted(self):
+    def _config(self):
         import tempfile
         from pathlib import Path
 
@@ -1528,48 +1534,137 @@ class TestInteractiveChannelPrompts(unittest.TestCase):
             "research:\n"
             "  stage1_prompt: ./prompts/prompt1_entity_discovery.md\n"
             "  stage2_prompt: ./prompts/prompt2_source_collection.md\n"
-            "  retrieval_injection: {enabled: false}\n"
-            "search_sweep: {enabled: false}\n"
+            "  retrieval_injection: {enabled: false, provider: null}\n"
+            "  derive_channels: {enabled: true, probe_official_site: false}\n"
+            "search_sweep: {enabled: false, provider: null}\n"
             "repost_resolution: {enabled: false}\n"
             "official_site: {enabled: false, index_url: null}\n"
             "registries: {filings_search_key: null, patent_assignee: null}\n",
             encoding="utf-8",
         )
+        return cfg
+
+    def test_one_input_line_is_enough(self):
+        """Exactly one prompt. A second input() call would raise StopIteration."""
+        code, out = self._run_main(["TestCorp"], ["--config", str(self._config())])
+        self.assertEqual(code, 0)
+        self.assertIn("조사할 회사명을 입력하세요", out)
+        self.assertIn("Done.", out)
+
+    def test_the_old_channel_questions_are_gone(self):
+        _code, out = self._run_main(["TestCorp"], ["--config", str(self._config())])
+        for gone in ("공식 뉴스룸 목록 URL", "거래소 공시 조회용", "특허 출원인 법인명"):
+            self.assertNotIn(gone, out)
+
+    def test_no_chinese_name_advice_in_the_prompt(self):
+        """The user types an English name; the pipeline finds the Chinese ones."""
+        _code, out = self._run_main(["TestCorp"], ["--config", str(self._config())])
+        self.assertNotIn("중국어 회사명이 가장 정확", out)
+
+    def test_stage0_runs_before_stage1(self):
+        _code, out = self._run_main(["TestCorp"], ["--config", str(self._config())])
+        self.assertLess(out.index("[0/2]"), out.index("[1/2]"))
+
+    def test_company_flag_skips_the_prompt_entirely(self):
         code, out = self._run_main(
-            ["TestCorp", "", "", ""], ["--config", str(cfg)]
+            [], ["--company", "TestCorp", "--config", str(self._config())]
         )
         self.assertEqual(code, 0)
-        # all three prompts shown
-        self.assertIn("공식 뉴스룸", out)
-        self.assertIn("거래소 공시", out)
-        self.assertIn("특허 출원인", out)
-        # skipping everything must tell the user how to add channels later
-        self.assertIn("추가 수집 없음", out)
-        self.assertIn("--official-site", out)
-
-    def test_channels_are_not_asked_when_company_is_a_flag(self):
-        import tempfile
-        from pathlib import Path
-
-        cfg = Path(tempfile.mkdtemp()) / "c.yaml"
-        cfg.write_text(
-            "provider: mock\n"
-            f"output: {{root_dir: {Path(tempfile.mkdtemp())}}}\n"
-            "research:\n"
-            "  stage1_prompt: ./prompts/prompt1_entity_discovery.md\n"
-            "  stage2_prompt: ./prompts/prompt2_source_collection.md\n"
-            "  retrieval_injection: {enabled: false}\n"
-            "search_sweep: {enabled: false}\n"
-            "repost_resolution: {enabled: false}\n"
-            "official_site: {enabled: false, index_url: null}\n"
-            "registries: {filings_search_key: null, patent_assignee: null}\n",
-            encoding="utf-8",
-        )
-        # No stdin available: scripted use must never block on a prompt.
-        code, out = self._run_main([], ["--company", "TestCorp", "--config", str(cfg)])
-        self.assertEqual(code, 0)
-        self.assertNotIn("공식 뉴스룸", out)
         self.assertIn("조사 대상: TestCorp", out)
+        self.assertNotIn("입력하세요", out)
+
+
+def _derivation_harness():
+    """Harness with channel derivation on and the network probe off."""
+    h = Harness(MockProvider())
+    h.config.research = {**h.config.research,
+                         "derive_channels": {"enabled": True,
+                                             "probe_official_site": False}}
+    return h
+
+
+class TestChannelDerivation(unittest.TestCase):
+    """Derive the channel inputs from stage 0/1 output rather than asking."""
+
+    NAMES = {
+        "chinese_names": [
+            {"name": "智元", "type": "short_name", "confidence": "high"},
+            {"name": "上海智元恒岳科技合伙企业（有限合伙）", "type": "legal_entity",
+             "confidence": "low"},
+            {"name": "上海智元新创技术有限公司", "type": "legal_entity",
+             "confidence": "high"},
+        ],
+    }
+
+    def _pipeline(self):
+        return _derivation_harness()
+
+    def test_patent_assignee_prefers_the_operating_company(self):
+        h = self._pipeline()
+        try:
+            d = h.pipeline.derive_channels(self.NAMES, "")
+            # A 合伙企业 is a holding vehicle, not the entity that files patents.
+            self.assertEqual(d["patent_assignee"], "上海智元新创技术有限公司")
+        finally:
+            h.cleanup()
+
+    def test_listed_entity_is_found_next_to_a_stock_code(self):
+        h = self._pipeline()
+        try:
+            text = "智元机器人取得上纬新材（688585.SH）控制权，持股63.62%。"
+            d = h.pipeline.derive_channels({}, text)
+            self.assertEqual(d["filings_search_key"], "上纬新材")
+            self.assertIn("688585", d["evidence"]["filings_search_key"])
+        finally:
+            h.cleanup()
+
+    def test_most_mentioned_stock_code_wins(self):
+        h = self._pipeline()
+        try:
+            text = ("富临精工（300432.SZ）은 고객. "
+                    "上纬新材（688585.SH）… 上纬新材（688585.SH）… 上纬新材（688585.SH）")
+            d = h.pipeline.derive_channels({}, text)
+            self.assertEqual(d["filings_search_key"], "上纬新材")
+        finally:
+            h.cleanup()
+
+    def test_no_stock_code_yields_none_not_a_guess(self):
+        h = self._pipeline()
+        try:
+            d = h.pipeline.derive_channels({}, "이 회사는 비상장입니다.")
+            self.assertIsNone(d["filings_search_key"])
+        finally:
+            h.cleanup()
+
+    def test_official_host_candidates_exclude_media_and_registries(self):
+        from src.pipeline import _official_host_candidates
+
+        text = ("https://www.agibot.com.cn/about https://www.agibot.com.cn/news "
+                "https://baike.baidu.com/x https://www.tianyancha.com/y "
+                "https://news.qq.com/z https://xueqiu.com/w")
+        hosts = _official_host_candidates(text)
+        self.assertEqual(hosts[0], "agibot.com.cn")
+        for bad in ("baike.baidu.com", "tianyancha.com", "news.qq.com", "xueqiu.com"):
+            self.assertNotIn(bad, hosts)
+
+    def test_probe_is_skipped_when_disabled(self):
+        """Tests and offline runs must not reach the network."""
+        h = self._pipeline()
+        try:
+            d = h.pipeline.derive_channels({}, "https://www.example.com/a")
+            self.assertIsNone(d["official_site"])
+        finally:
+            h.cleanup()
+
+    def test_derivation_records_why(self):
+        h = self._pipeline()
+        try:
+            d = h.pipeline.derive_channels(
+                self.NAMES, "上纬新材（688585.SH）"
+            )
+            self.assertIn("confidence=high", d["evidence"]["patent_assignee"])
+        finally:
+            h.cleanup()
 
 
 class TestClaudeCliProvider(unittest.TestCase):
@@ -2076,6 +2171,7 @@ class TestStage2OverwriteGuard(unittest.TestCase):
             "  stage1_prompt: ./prompts/prompt1_entity_discovery.md\n"
             "  stage2_prompt: ./prompts/prompt2_source_collection.md\n"
             "  retrieval_injection: {enabled: false, provider: null}\n"
+            "  derive_channels: {enabled: true, probe_official_site: false}\n"
             "search_sweep: {enabled: false, provider: null}\n"
             "repost_resolution: {enabled: false}\n"
             "official_site: {enabled: false, index_url: null}\n"
@@ -2298,5 +2394,58 @@ class TestNameResolution(unittest.TestCase):
         try:
             h.pipeline.resolve_names("AgiBot")
             self.assertTrue(any("no Chinese names" in n for n in h.metadata.notes))
+        finally:
+            h.cleanup()
+
+    def test_newsroom_probe_rejects_an_unrelated_host(self):
+        """Regression: this returned jobui.com's news feed for AgiBot."""
+        from src.fetcher import FetchResult
+
+        h = _derivation_harness()
+        try:
+            h.config.research["derive_channels"]["probe_official_site"] = True
+
+            class Fetcher:
+                def fetch(self, url):
+                    # A job board that has a "news" link but never names the company.
+                    return FetchResult(
+                        url=url, final_url=url, status=200, title="전국 기업 순위",
+                        text="채용 정보 사이트입니다." * 20, published=None,
+                        html_bytes=100,
+                        links=[("news", "https://jobui.com/rank/news/")],
+                    )
+
+            h.pipeline._fetcher = Fetcher()
+            d = h.pipeline.derive_channels(
+                {"search_names": ["智元机器人"], "chinese_names": []},
+                "https://jobui.com/x",
+            )
+            self.assertIsNone(d["official_site"])
+        finally:
+            h.cleanup()
+
+    def test_newsroom_probe_accepts_a_host_that_names_the_company(self):
+        from src.fetcher import FetchResult
+
+        h = _derivation_harness()
+        try:
+            h.config.research["derive_channels"]["probe_official_site"] = True
+
+            class Fetcher:
+                def fetch(self, url):
+                    return FetchResult(
+                        url=url, final_url="https://agibot.com.cn/", status=200,
+                        title="智元机器人 官网", text="智元机器人 " * 30,
+                        published=None, html_bytes=100,
+                        links=[("新闻资讯", "https://agibot.com.cn/article/315")],
+                    )
+
+            h.pipeline._fetcher = Fetcher()
+            d = h.pipeline.derive_channels(
+                {"search_names": ["智元机器人"], "chinese_names": []},
+                "https://agibot.com.cn/about",
+            )
+            self.assertEqual(d["official_site"], "https://agibot.com.cn/article/315")
+            self.assertIn("mentions the company", d["evidence"]["official_site"])
         finally:
             h.cleanup()

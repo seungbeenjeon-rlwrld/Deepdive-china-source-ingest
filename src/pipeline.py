@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 from .collectors import (
     CNINFO_QUERY_URL,
@@ -104,6 +105,18 @@ _FIELD_MAP = {
 
 _FIELD_LINE = re.compile(r"^\s*\**\s*([A-Z][A-Z0-9_ /]{2,40})\s*\**\s*:\s*(.*)$")
 Progress = Callable[[str], None]
+
+# Words a Chinese corporate site uses for its news listing.
+_NEWS_KEYWORDS = (
+    "新闻", "资讯", "动态", "news", "media", "press", "公告", "article",
+)
+
+# Chinese has no word separators, so a name captured before a stock code can
+# start with the verb that preceded it ("取得上纬新材").
+_LEADING_VERBS = r"^(取得|收购|入主|控股|参股|持有|旗下|和|与|及|的|为|即)"
+
+# Mainland listing codes: 6 digits with an optional exchange suffix.
+_STOCK_CODE = re.compile(r"\b(6\d{5}|00\d{4}|30\d{4})(?:\.(?:SH|SZ|sh|sz))?\b")
 
 
 @dataclass
@@ -358,8 +371,7 @@ class Pipeline:
         official_index = self.config.official_site.get("index_url")
         official_hosts: list[str] = []
         if official_index:
-            from urllib.parse import urlparse as _urlparse
-            official_hosts.append(_urlparse(official_index).netloc)
+            official_hosts.append(urlparse(official_index).netloc)
         resolver = RepostResolver(
             self._get_fetcher(), search, official_hosts=official_hosts
         )
@@ -545,6 +557,119 @@ class Pipeline:
         self.metadata.counts["name_collisions"] = len(parsed.get("collisions") or [])
         self.storage.write_metadata(self.metadata)
         return result
+
+    # -- derive the per-company channel inputs instead of asking ----------
+    def derive_channels(
+        self, names_meta: dict[str, Any], stage1_text: str
+    ) -> dict[str, Any]:
+        """Work out the three channel inputs from what stages 0-1 already found.
+
+        These used to be three interactive questions, which was the same mistake
+        as asking the user for Chinese names: the pipeline already knows them.
+
+        - patent assignee  -> stage 0's legal-entity name
+        - listed entity    -> a stock code in stage 1's output, with its name
+        - newsroom index   -> stage 1's most-cited official domain, then its
+                              news listing page
+        """
+        derived: dict[str, Any] = {"patent_assignee": None, "filings_search_key": None,
+                                   "official_site": None, "evidence": {}}
+
+        # 1) Patent assignee: the registered legal entity, not the brand.
+        legal = [
+            e for e in (names_meta.get("chinese_names") or [])
+            if isinstance(e, dict) and e.get("type") == "legal_entity" and e.get("name")
+        ]
+        rank = {"high": 0, "medium": 1, "low": 2}
+        legal.sort(key=lambda e: rank.get(str(e.get("confidence")), 3))
+        # Prefer a full 有限公司 / 股份有限公司 name; a partnership is a holding
+        # vehicle, not the operating entity that files patents.
+        preferred = [e for e in legal if "有限公司" in e["name"] and "合伙" not in e["name"]]
+        chosen = (preferred or legal)
+        if chosen:
+            derived["patent_assignee"] = chosen[0]["name"]
+            derived["evidence"]["patent_assignee"] = (
+                f"stage 0 legal_entity, confidence={chosen[0].get('confidence')}"
+            )
+
+        # 2) Listed entity: a mainland stock code names the company right before it.
+        listed = _find_listed_entity(stage1_text)
+        if listed:
+            derived["filings_search_key"] = listed["name"]
+            derived["evidence"]["filings_search_key"] = (
+                f"stage 1 mentions {listed['code']} next to {listed['name']!r}"
+            )
+
+        # 3) Newsroom index: find the official domain, then its news listing.
+        # This one needs a network probe, so it is separately switchable — tests
+        # and offline runs must not reach out.
+        cfg = self.config.research.get("derive_channels") or {}
+        site = (
+            self._find_newsroom(stage1_text, names_meta)
+            if cfg.get("probe_official_site", True)
+            else None
+        )
+        if site:
+            derived["official_site"] = site["url"]
+            derived["evidence"]["official_site"] = site["why"]
+
+        return derived
+
+    def _find_newsroom(
+        self, stage1_text: str, names_meta: dict[str, Any]
+    ) -> Optional[dict[str, str]]:
+        """Locate the company's own news listing page.
+
+        Two checks matter. The host has to actually be the company's — stage 1
+        cites job boards and quote pages too, and without verification this
+        happily returned jobui.com's news feed. And the link has to be a listing
+        page, not one article.
+        """
+        hosts = _official_host_candidates(stage1_text)
+        if not hosts:
+            return None
+
+        # Tokens that confirm a homepage really belongs to the target. Full
+        # names are too strict: the brand is 智元机器人 but the official site
+        # titles itself 智元创新（上海）科技股份有限公司, sharing only 智元.
+        raw_names = [n for n in (names_meta.get("search_names") or []) if n]
+        for entry in names_meta.get("chinese_names") or []:
+            if isinstance(entry, dict) and entry.get("name"):
+                raw_names.append(entry["name"])
+        if names_meta.get("canonical_english"):
+            raw_names.append(str(names_meta["canonical_english"]))
+        expected = _identity_tokens(raw_names)
+
+        fetcher = self._get_fetcher()
+        for host in hosts[:4]:
+            try:
+                page = fetcher.fetch(f"https://{host}/")
+            except (FetchError, FetchBlocked) as exc:
+                self.log.debug("newsroom probe failed for %s: %s", host, exc)
+                continue
+            if page.blocked:
+                continue
+
+            # Does this site actually claim to be the company?
+            haystack = f"{page.title or ''} {(page.text or '')[:3000]}"
+            if expected and not any(name in haystack for name in expected):
+                self.log.debug("%s does not mention the company — skipping", host)
+                continue
+
+            final_host = urlparse(page.final_url).netloc.lower().removeprefix("www.")
+            for label, url in page.links:
+                link_host = urlparse(url).netloc.lower().removeprefix("www.")
+                if link_host not in (host, final_host):
+                    continue
+                path = urlparse(url).path
+                if not any(k in f"{label} {url}".lower() for k in _NEWS_KEYWORDS):
+                    continue
+                # A listing page, not an individual article.
+                if re.search(r"/detail/\d+|/\d{6,}|\.html?$", path) and "list" not in path:
+                    continue
+                return {"url": url, "why": f"news link on https://{final_host}/ "
+                                          f"(page mentions the company)"}
+        return None
 
     # -- retrieval we control, injected into the stage prompts -------------
     def build_retrieval_block(
@@ -1703,3 +1828,127 @@ def _names_markdown(company: str, result: dict[str, Any]) -> str:
     if result.get("raw_text"):
         lines += ["", "## Raw model output", "", "```json", result["raw_text"], "```"]
     return "\n".join(lines) + "\n"
+
+
+def _find_listed_entity(text: str) -> Optional[dict[str, str]]:
+    """Find a listed company named next to a mainland stock code.
+
+    Stage 1 writes "上纬新材（688585.SH）", so the bracket is the anchor: the
+    Chinese characters immediately before it are the name. Chinese has no word
+    separators, so scanning backwards without that anchor swallows the
+    surrounding sentence ("智元机器人取得上纬新材").
+
+    A-share short names run 2-6 characters; anything longer is sentence, not name.
+    """
+    counts: dict[str, int] = {}
+
+    # Name followed by the code in brackets — the reliable form.
+    bracketed = re.finditer(
+        r"([\u4e00-\u9fff]{2,4})\s*[（(]\s*(6\d{5}|00\d{4}|30\d{4})"
+        r"(?:\.(?:SH|SZ|sh|sz))?\s*[）)]",
+        text,
+    )
+    for match in bracketed:
+        name = re.sub(_LEADING_VERBS, "", match.group(1))
+        if len(name) < 2:
+            continue
+        key = f"{name}|{match.group(2)}"
+        counts[key] = counts.get(key, 0) + 2  # weight the trustworthy form
+
+    if not counts:
+        # Fallback: no brackets. Take the trailing characters before the code and
+        # strip leading connectives, accepting that this is less reliable.
+        for match in _STOCK_CODE.finditer(text):
+            window = text[max(0, match.start() - 8): match.start()]
+            name = "".join(re.findall(r"[\u4e00-\u9fff]", window))[-4:]
+            name = re.sub(_LEADING_VERBS, "", name)
+            if len(name) < 2:
+                continue
+            key = f"{name}|{match.group(1)}"
+            counts[key] = counts.get(key, 0) + 1
+
+    if not counts:
+        return None
+    key = max(counts, key=lambda k: counts[k])
+    name, code = key.split("|", 1)
+    return {"name": name, "code": code, "mentions": str(counts[key])}
+
+
+def _official_host_candidates(text: str) -> list[str]:
+    """Hosts in stage 1 output that look like the company's own site.
+
+    Ranked by how often stage 1 cited them, after removing the media, registry
+    and community domains that dominate the source list.
+    """
+    excluded = (
+        "baidu.com", "weibo.com", "zhihu.com", "sina.com", "qq.com", "163.com",
+        "sohu.com", "bilibili.com", "eastmoney.com", "10jqka.com", "cls.cn",
+        "jiemian.com", "thepaper.cn", "tmtpost.com", "stcn.com", "21jingji.com",
+        "xueqiu.com", "github.com", "arxiv.org", "huggingface.co", "wikipedia.org",
+        "tianyancha.com", "qcc.com", "qichacha.com", "cninfo.com.cn", "gov.cn",
+        "zhipin.com", "liepin.com", "feishu.cn", "csdn.net", "smzdm.com",
+        "chinadaily.com.cn", "cnr.cn", "ifeng.com", "guancha.cn", "36kr.com",
+        "nbd.com.cn", "caijing", "leaderobot.com", "serpapi.com",
+    )
+    counts: dict[str, int] = {}
+
+    # Stage 1 writes bare hosts inside markdown tables as often as full URLs
+    # ("zhiyuan-robot.com" with no scheme), so match both.
+    patterns = (
+        r"https?://([^\s/\)\]\|\"'>]+)",
+        r"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|cn|net|org|io|ai)"
+        r"(?:\.[a-z]{2})?)\b",
+    )
+    for pattern in patterns:
+        for raw in re.findall(pattern, text, re.I):
+            host = raw.lower().strip(".").removeprefix("www.")
+            if not host or "." not in host:
+                continue
+            if any(bad in host for bad in excluded):
+                continue
+            counts[host] = counts.get(host, 0) + 1
+    return sorted(counts, key=lambda h: -counts[h])
+
+
+# Words shared by thousands of Chinese companies; they identify nothing.
+_GENERIC_NAME_PARTS = (
+    "股份有限公司", "有限责任公司", "有限公司", "合伙企业", "有限合伙",
+    "科技", "技术", "创新", "机器人", "智能", "集团", "控股", "实业",
+    "信息", "电子", "网络", "数据", "国际", "发展",
+)
+_LOCATION_PREFIXES = (
+    "上海", "北京", "深圳", "广州", "杭州", "苏州", "南京", "成都", "武汉",
+    "天津", "重庆", "西安", "宁波", "无锡", "合肥", "青岛", "长沙", "东莞",
+)
+
+
+def _identity_tokens(names: list[str]) -> list[str]:
+    """Reduce company names to the parts that actually identify them.
+
+    "智元机器人" and "智元创新（上海）科技股份有限公司" are the same company but
+    share no full name — only 智元. Stripping the location prefix and the
+    industry/corporate-form words leaves that.
+    """
+    tokens: list[str] = []
+    for name in names:
+        cleaned = re.sub(r"[（()）\s]", "", name)
+        for prefix in _LOCATION_PREFIXES:
+            if cleaned.startswith(prefix) and len(cleaned) > len(prefix) + 1:
+                cleaned = cleaned[len(prefix):]
+        for part in _GENERIC_NAME_PARTS:
+            cleaned = cleaned.replace(part, "")
+        # An ASCII name is already distinctive; keep it whole.
+        candidate = cleaned if cleaned else re.sub(r"[（()）\s]", "", name)
+        if len(candidate) >= 2:
+            tokens.append(candidate)
+        if name.isascii() and len(name) >= 3:
+            tokens.append(name)
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for token in tokens:
+        key = token.lower()
+        if key not in seen:
+            seen.add(key)
+            ordered.append(token)
+    return ordered
