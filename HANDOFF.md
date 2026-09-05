@@ -133,22 +133,9 @@ rm -rf research/testcorp
 
 ## 5. 첫 실제 수집
 
-### 6-1. 회사별 세 값 준비
+### 5-1. 회사명 하나만 넣으면 됨
 
-회사마다 아래 세 가지를 알면 수집 범위가 크게 넓어짐.
-
-| 값 | 어디서 찾는지 | AgiBot 예시 |
-| --- | --- | --- |
-| 공식 뉴스룸 인덱스 URL | 회사 홈페이지 → 뉴스/新闻资讯 목록 페이지 | `https://www.agibot.com.cn/article/315` |
-| 상장사명 (있으면) | 해당 기업이 지배하는 상장사 | `上纬新材` |
-| 특허 출원인 법인명 | 중국어 정식 법인명 | `上海智元新创技术有限公司` |
-
-**모르면 비워도 됨.** Stage 1이 법인명을 찾아주므로, 1차 실행 후
-`01_entity_discovery.md`에서 확인하여 2차 실행에 넣는 방식이 편함.
-
-### 6-2. 실행
-
-가장 간단한 방법은 **인자 없이 실행**하는 것임. 필요한 값을 순서대로 물어봄.
+**영어(글로벌) 회사명 하나로 충분함.** 중국어 이름을 알 필요 없음.
 
 ```bash
 python research.py
@@ -161,68 +148,95 @@ python research.py
 
 조사할 회사명을 입력하세요.
 > AgiBot
-
-────────────────────────────────────────
-추가 수집 채널 (선택) — 모르면 Enter 로 건너뛰세요.
-Stage 1 결과의 법인명에서 나중에 찾아 재실행할 수 있습니다.
-
-1) 공식 뉴스룸 목록 URL
-> https://www.agibot.com.cn/article/315
-
-2) 거래소 공시 조회용 상장사명
-> 上纬新材
-
-3) 특허 출원인 법인명
-> 上海智元新创技术有限公司
-
-────────────────────────────────────────
-추가 수집: 공식 뉴스룸, 거래소 공시, 특허
 ```
 
-**세 값을 모르면 전부 Enter로 넘어가도 됨.** 그 경우 Stage 1·2 와 검색만 돌고,
-어떻게 나중에 추가하는지 안내가 출력됨.
+그 뒤로는 아무것도 묻지 않음.
 
-스크립트로 돌릴 때는 플래그로 지정함 (이때는 아무것도 묻지 않음):
+### 5-2. 나머지는 파이프라인이 알아냄
+
+수집 범위를 결정하는 값들을 **묻지 않고 도출함.**
+
+| 값 | 어디서 나오는지 |
+| --- | --- |
+| 중국어 검색명 | Stage 0 이 영어 이름을 전개 |
+| 특허 출원인 법인명 | Stage 0 의 `legal_entity` 이름 |
+| 거래소 공시용 상장사명 | Stage 1 텍스트의 종목코드 옆 회사명 |
+| 공식 뉴스룸 URL | Stage 1 이 인용한 관방 도메인의 뉴스 목록 |
+
+Stage 0 이 필요한 이유는 영어 이름만으로 중국 인덱스를 검색하면 **동명이인
+회사가 섞여 나오기 때문**임. 실측: Baidu 에서 `AgiBot` 을 검색하면 수술로봇
+회사 `AGIBOT敏捷机器人` 이 함께 반환됨. Stage 0 이 그런 회사를 `collisions` 로
+분리해 Stage 1 에 "합치지 말라"고 전달함.
+
+도출에 실패하면 그 채널만 건너뛰고 나머지는 정상 진행됨. 도출 근거는
+`metadata.json` 의 `notes` 와 `00_name_resolution.md` 에 기록됨.
+
+### 5-3. 실행 화면
+
+10~20분 걸림. 이런 순서로 흘러감.
+
+```
+[0/2] Resolving Chinese names...
+      8 search names (6 Chinese), 5 name collision(s)
+      retrieval: 智元机器人
+      reading: 以智能机器创造无限生产力-智元创新(上海)科技股份有限公司
+      injected 24 results from serpapi (4 pages read in full)
+[1/2] Discovering company entities...
+✓ Entity discovery complete
+✓ Results saved
+  자동 인식 — 공식 뉴스룸: https://www.agibot.com.cn/News/Company
+  자동 인식 — 거래소 공시: 上纬新材
+  자동 인식 — 특허 출원인: 上海智元新创技术有限公司
+[2/2] Collecting Chinese local sources...
+✓ Source collection complete
+✓ Results saved
+[+] Crawling official newsroom: ...
+✓ Preserved 8 official articles in full text
+[+] Fetching exchange filings for 上纬新材...
+✓ Indexed 20 exchange filings with direct PDF links
+
+Research saved to:
+./research/agibot/2026-09-05_120000/
+
+Done.
+```
+
+값을 직접 지정하려면 플래그로 넘길 것. 플래그가 자동 도출을 덮어씀:
 
 ```bash
-python research.py --company "智元机器人" \
+python research.py --company "AgiBot" \
   --official-site "https://www.agibot.com.cn/article/315" \
   --filings "上纬新材" \
   --patents "上海智元新创技术有限公司"
 ```
 
-10~20분 소요됨. 진행 상황이 터미널에 출력됨.
-
-### 6-3. 결과 확인
+### 5-4. 결과 확인
 
 ```bash
-ls research/智元机器人/*/
-cat research/智元机器人/*/metadata.json
+ls research/agibot/*/
+cat research/agibot/*/metadata.json
 ```
 
-`metadata.json`의 `*_status`가 `completed`인지 확인할 것.
-`failed`가 있으면 `stage2_error` 등에 사유가 있음.
+`metadata.json` 의 `*_status` 가 `completed` 인지 확인할 것. `failed` 가 있으면
+`stage2_error` 등에 사유가 있음.
 
 **중간에 실패해도 이미 수집된 것은 남음.**
 
-Stage 2가 실패했을 때만 다시 실행하려면:
+Stage 2 가 실패했을 때만 다시 실행하려면:
 
 ```bash
-python research.py --resume "research/智元机器人/2026-09-04_120000" --stage 2
+python research.py --resume "research/agibot/2026-09-05_120000" --stage 2
 ```
 
 **이미 완료된 Stage 2 는 덮어쓰지 않도록 막혀 있음.** 수집 채널만 추가하려면:
 
 ```bash
-python research.py --resume "research/智元机器人/2026-09-04_120000" --stage channels
+python research.py --resume "research/agibot/2026-09-05_120000" --stage channels
 ```
 
 `--stage channels` 는 공식 뉴스룸·거래소 공시·특허·검색 스윕만 실행하고
-Stage 1·2 는 건드리지 않음. 회사별 세 값을 나중에 알게 됐을 때 쓰는 경로임.
-
-Stage 2 를 의도적으로 다시 만들려면 `--force` 를 붙일 것.
-
----
+Stage 1·2 는 건드리지 않음. Stage 2 를 의도적으로 다시 만들려면 `--force` 를
+붙일 것.
 
 ## 6. Claude로 딥다이브 — 여기가 본론
 
