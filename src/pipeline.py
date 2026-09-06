@@ -37,6 +37,8 @@ from .models import (
 )
 from .parsing import (
     _NEWS_KEYWORDS,
+    cluster_by_title,
+    dedupe_records,
     _find_listed_entity,
     _identity_tokens,
     _official_host_candidates,
@@ -50,7 +52,7 @@ from .parsing import (
 )
 from .parsing import _record_from_citation, _record_from_page
 from .provider import ProviderError, ResearchProvider
-from .reports import _names_markdown, _records_markdown, _sweep_markdown
+from .reports import _names_markdown, _records_markdown, _sweep_markdown, index_markdown
 from .storage import (
     LocalStorageBackend,
     RAW_STAGE1,
@@ -64,6 +66,7 @@ from .storage import (
     SWEEP_MD,
     md_document,
 )
+INDEX_MD = "00_INDEX.md"
 NAMES_JSON, NAMES_MD = "00_name_resolution.json", "00_name_resolution.md"
 OFFICIAL_JSON, OFFICIAL_MD = "04_official_site.json", "04_official_site.md"
 FILINGS_JSON, FILINGS_MD = "06_exchange_filings.json", "06_exchange_filings.md"
@@ -108,6 +111,9 @@ class Pipeline:
         self._progress = progress or (lambda _msg: None)
         self._fetcher: Optional[Fetcher] = None
         self._search_cache: dict[str, ResearchProvider] = {}
+        # Every source written in this run, so duplicates can be merged and the
+        # index rebuilt without re-reading the directory.
+        self._saved: list[SourceRecord] = []
 
     def _get_fetcher(self) -> Fetcher:
         if self._fetcher is None:
@@ -171,12 +177,49 @@ class Pipeline:
         return int(self.metadata.counts.get("raw_source_files", 0)) + 1
 
     def _persist_records(self, records: list[SourceRecord]) -> None:
+        """Write new sources, skipping URLs already saved in this run."""
         if not self.config.output.get("save_raw_sources", True):
             return
+
+        fresh = [r for r in records if not self._already_saved(r)]
+        skipped = len(records) - len(fresh)
+        if skipped:
+            self.log.info("skipped %d source(s) already saved in this run", skipped)
+            self.metadata.counts["duplicate_sources_skipped"] = (
+                int(self.metadata.counts.get("duplicate_sources_skipped", 0)) + skipped
+            )
+
         start = self._next_source_index()
-        for offset, record in enumerate(records):
+        for offset, record in enumerate(fresh):
             self.storage.save_source(record, index=start + offset)
-        self.metadata.counts["raw_source_files"] = start + len(records) - 1
+            self._saved.append(record)
+        self.metadata.counts["raw_source_files"] = start + len(fresh) - 1
+        self._write_index()
+
+    def _already_saved(self, record: SourceRecord) -> bool:
+        """Has this URL been written already? Merge into the existing record if so."""
+        url = (record.canonical_url or record.retrieval_url or "").strip()
+        if not url:
+            return False
+        for existing in self._saved:
+            if (existing.canonical_url or existing.retrieval_url or "").strip() != url:
+                continue
+            seen = list(existing.extra.get("also_found_by") or [existing.origin])
+            if record.origin and record.origin not in seen:
+                seen.append(record.origin)
+            existing.extra = {**existing.extra, "also_found_by": seen}
+            return True
+        return False
+
+    def _write_index(self) -> None:
+        """Rewrite the corpus index so it always reflects what is on disk."""
+        if not self._saved or not self.config.output.get("save_markdown", True):
+            return
+        cluster_by_title(self._saved)
+        self.storage.save(
+            INDEX_MD, index_markdown(self.metadata.target_company, self._saved)
+        )
+        self.metadata.counts["indexed_sources"] = len(self._saved)
 
     # -- official newsroom crawl (primary source, prompt 2 §10 priority 2) --
     def run_official_site(self, company: str, index_url: str) -> dict[str, Any]:
@@ -1012,7 +1055,7 @@ class Pipeline:
         )
 
         written = self._write_raw_sources(blocks, citations)
-        files["raw_sources"] = str(len(written))
+        files["raw_sources"] = str(written)
 
         self.metadata.stage2_status = "completed"
         self.metadata.stage2_request_id = response.request_id
@@ -1022,7 +1065,7 @@ class Pipeline:
         self.metadata.counts["stage2_pages_fetched"] = retrieval_meta.get("pages_fetched", 0)
         self.metadata.counts["labels_downgraded"] = label_audit.get("downgraded", 0)
         self.metadata.counts["stage2_citations"] = len(citations)
-        self.metadata.counts["raw_source_files"] = len(written)
+        self.metadata.counts["raw_source_files"] = len(self._saved)
         self.storage.write_metadata(self.metadata)
 
         return StageResult(2, response, files, parsed)
@@ -1071,13 +1114,16 @@ class Pipeline:
 
     def _write_raw_sources(
         self, blocks: list[SourceRecord], citations: list[SourceRecord]
-    ) -> list[dict[str, str]]:
-        if not self.config.output.get("save_raw_sources", True):
-            return []
-        written = []
-        for index, record in enumerate(blocks + citations, start=1):
-            written.append(self.storage.save_source(record, index=index))
-        return written
+    ) -> int:
+        """Stage 2's sources go through the same path as every other channel.
+
+        This used to number from 1 unconditionally, so a later channel wrote
+        over stage 2's files — one run lost all 24 of them. Routing everything
+        through _persist_records also gets dedup and the index for free.
+        """
+        before = len(self._saved)
+        self._persist_records(blocks + citations)
+        return len(self._saved) - before
 
     # -- WSA search sweep (second evidence channel) -----------------------
     def run_search_sweep(self, company: str, queries: list[str]) -> dict[str, Any]:

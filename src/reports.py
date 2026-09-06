@@ -135,3 +135,52 @@ def _names_markdown(company: str, result: dict[str, Any]) -> str:
     if result.get("raw_text"):
         lines += ["", "## Raw model output", "", "```json", result["raw_text"], "```"]
     return "\n".join(lines) + "\n"
+
+def index_markdown(company: str, records: list[SourceRecord]) -> str:
+    """One compact table of every source, strongest evidence first.
+
+    This exists so a downstream model can decide what to open without reading
+    the corpus. Measured on one run: 2.3MB on disk for 43KB of actual content,
+    so blind reading is almost entirely wasted tokens. Everything here is one
+    line per source — id, grade, date, host, title, file.
+    """
+    from .parsing import _grade_rank
+
+    ranked = sorted(
+        records,
+        key=lambda r: (
+            _grade_rank(r.content_access_status),
+            r.extra.get("cluster_role") == "duplicate_coverage",
+            -(len(r.content or "")),
+        ),
+    )
+
+    lines = [
+        f"# Source index — {company}",
+        "",
+        f"{len(records)} sources. Read this file first, then open only what you need;",
+        "the corpus as a whole does not fit in a context window.",
+        "",
+        "Grades, strongest first: VERBATIM_FULL_TEXT, VERBATIM_PARTIAL_TEXT,",
+        "TRANSCRIPT_EXTRACTED, HIGH_FIDELITY_EXTRACTION, SEARCH_SNIPPET_ONLY, URL_ONLY.",
+        "`dup` marks repeated coverage of a story already listed above — skip unless",
+        "you need a second account of it.",
+        "",
+        "| file | grade | date | source | title | chars | dup |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+
+    from urllib.parse import urlparse
+
+    for record in ranked:
+        path = record.extra.get("_file") or record.source_id
+        grade = (record.content_access_status or "?").replace("_", " ").title().replace(" ", "")
+        date = (record.publication_date or "")[:10]
+        url = record.canonical_url or record.retrieval_url or ""
+        host = urlparse(url).netloc.replace("www.", "")[:24] if url else ""
+        title = (record.title or "").replace("|", "／")[:52]
+        chars = len(record.content or "")
+        dup = "dup" if record.extra.get("cluster_role") == "duplicate_coverage" else ""
+        lines.append(f"| {path} | {grade} | {date} | {host} | {title} | {chars} | {dup} |")
+
+    return "\n".join(lines) + "\n"

@@ -2549,3 +2549,142 @@ class TestBugsFoundByRealRuns(unittest.TestCase):
         self.assertEqual(records, [])
         self.assertEqual(len(failures), 1)
         self.assertIn("no article links matched", failures[0]["error"])
+
+
+class TestCorpusEfficiency(unittest.TestCase):
+    """A 2.3MB corpus holding 43KB of content wastes a reader's context."""
+
+    def _rec(self, sid, url, status, content="", title=None, origin="provider_search"):
+        from src.models import SourceRecord
+
+        return SourceRecord(source_id=sid, retrieval_url=url, canonical_url=url,
+                            content_access_status=status, content=content,
+                            title=title, origin=origin)
+
+    def test_same_url_from_two_channels_is_merged_not_duplicated(self):
+        from src.parsing import dedupe_records
+
+        recs = [
+            self._rec("A", "https://x.com/1", "SEARCH_SNIPPET_ONLY", "짧은 요약",
+                      origin="provider_search"),
+            self._rec("B", "https://x.com/1", "VERBATIM_FULL_TEXT", "전문" * 500,
+                      origin="stage2_model_output"),
+        ]
+        kept, stats = dedupe_records(recs)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(stats["merged"], 1)
+        # the better read survives
+        self.assertEqual(kept[0].content_access_status, "VERBATIM_FULL_TEXT")
+
+    def test_merge_records_that_two_channels_found_it(self):
+        """Corroboration is signal, so it must not be silently discarded."""
+        from src.parsing import dedupe_records
+
+        recs = [
+            self._rec("A", "https://x.com/1", "SEARCH_SNIPPET_ONLY", origin="provider_search"),
+            self._rec("B", "https://x.com/1", "URL_ONLY", origin="stage2_model_output"),
+        ]
+        kept, _ = dedupe_records(recs)
+        self.assertCountEqual(
+            kept[0].extra["also_found_by"], ["provider_search", "stage2_model_output"]
+        )
+
+    def test_a_body_on_the_weaker_record_is_not_lost(self):
+        from src.parsing import dedupe_records
+
+        recs = [
+            self._rec("A", "https://x.com/1", "URL_ONLY", ""),
+            self._rec("B", "https://x.com/1", "SEARCH_SNIPPET_ONLY", "본문 있음"),
+        ]
+        kept, _ = dedupe_records(recs)
+        self.assertEqual(kept[0].content, "본문 있음")
+
+    def test_records_without_a_url_are_never_treated_as_duplicates(self):
+        from src.parsing import dedupe_records
+
+        recs = [self._rec("A", None, "URL_ONLY"), self._rec("B", None, "URL_ONLY")]
+        kept, stats = dedupe_records(recs)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(stats["merged"], 0)
+
+    def test_repeated_coverage_is_clustered_not_deleted(self):
+        """Eight outlets ran the same launch; a reader needs one, not eight."""
+        from src.parsing import cluster_by_title
+
+        recs = [
+            self._rec(f"S{i}", f"https://outlet{i}.com/a", "SEARCH_SNIPPET_ONLY",
+                      "요약", title="宇树发布四足机器人Unitree As2 全新登场")
+            for i in range(8)
+        ]
+        summary = cluster_by_title(recs)
+        self.assertEqual(summary["clusters"], 1)
+        roles = [r.extra["cluster_role"] for r in recs]
+        self.assertEqual(roles.count("primary"), 1)
+        self.assertEqual(roles.count("duplicate_coverage"), 7)
+        # nothing was removed
+        self.assertEqual(len(recs), 8)
+
+    def test_distinct_stories_are_not_clustered(self):
+        from src.parsing import cluster_by_title
+
+        recs = [
+            self._rec("A", "https://x.com/1", "SEARCH_SNIPPET_ONLY", title="宇树科技融资往事回顾"),
+            self._rec("B", "https://x.com/2", "SEARCH_SNIPPET_ONLY", title="成都宇辰科技完成工商注册"),
+        ]
+        self.assertEqual(cluster_by_title(recs)["clusters"], 0)
+
+    def test_no_clusters_does_not_raise(self):
+        """Regression: the cluster counter was unbound when nothing clustered."""
+        from src.parsing import cluster_by_title
+
+        self.assertEqual(cluster_by_title([])["clusters"], 0)
+
+    def test_index_lists_strongest_evidence_first(self):
+        from src.reports import index_markdown
+
+        recs = [
+            self._rec("A", "https://x.com/1", "URL_ONLY", title="약한 것"),
+            self._rec("B", "https://x.com/2", "VERBATIM_FULL_TEXT", "전문", title="강한 것"),
+        ]
+        for i, r in enumerate(recs, 1):
+            r.extra = {**r.extra, "_file": f"source_{i:03d}.md"}
+        out = index_markdown("X", recs)
+        self.assertLess(out.index("강한 것"), out.index("약한 것"))
+        self.assertIn("Read this file first", out)
+
+    def test_index_marks_duplicate_coverage(self):
+        from src.parsing import cluster_by_title
+        from src.reports import index_markdown
+
+        recs = [
+            self._rec(f"S{i}", f"https://o{i}.com/a", "SEARCH_SNIPPET_ONLY", "요약",
+                      title="宇树发布四足机器人Unitree As2")
+            for i in range(3)
+        ]
+        cluster_by_title(recs)
+        out = index_markdown("X", recs)
+        data_rows = [l for l in out.splitlines()
+                     if l.startswith("| source_") or l.startswith("| S")]
+        marked = [l for l in data_rows if l.rstrip().endswith("| dup |")]
+        self.assertEqual(len(marked), 2, "one primary, two duplicates")
+
+    def test_provider_payload_is_not_copied_into_each_source(self):
+        """77KB of API echo against 43KB of real content, in one run."""
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from src.storage import LocalStorageBackend
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            store = LocalStorageBackend(tmp)
+            store.create_run("X")
+            rec = self._rec("A", "https://x.com/1", "SEARCH_SNIPPET_ONLY", "본문")
+            rec.extra = {**rec.extra, "provider_payload": {"huge": "x" * 5000}}
+            store.save_source(rec, index=1)
+            saved = json.loads((store.run_dir / "raw_sources/source_001.json").read_text("utf-8"))
+            self.assertNotIn("x" * 100, json.dumps(saved))
+            self.assertIn("raw_", saved["extra"]["provider_payload"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

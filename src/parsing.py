@@ -686,3 +686,106 @@ def _identity_tokens(names: list[str]) -> list[str]:
             seen.add(key)
             ordered.append(token)
     return ordered
+
+# Evidence grades, strongest first. Used when merging duplicates: two channels
+# finding the same URL should keep the better read, not whichever came last.
+_GRADE_ORDER = {status: i for i, status in enumerate(CONTENT_ACCESS_STATUSES)}
+
+
+def _grade_rank(status: Optional[str]) -> int:
+    return _GRADE_ORDER.get(status or "", len(_GRADE_ORDER))
+
+
+def dedupe_records(records: list[SourceRecord]) -> tuple[list[SourceRecord], dict[str, Any]]:
+    """Collapse records that point at the same URL, keeping the best read.
+
+    The same page routinely arrives twice — once cited by the model in stage 2,
+    once from the search sweep. Measured on one run: 51 of 242 URLs were
+    duplicates. Dropping the later copy would lose information, because two
+    independent channels finding the same source is corroboration. So merge:
+    keep the strongest evidence grade and the longest content, and record which
+    channels saw it in ``extra.also_found_by``.
+    """
+    by_url: dict[str, SourceRecord] = {}
+    order: list[str] = []
+    merged = 0
+
+    for record in records:
+        url = (record.canonical_url or record.retrieval_url or "").strip()
+        if not url:
+            # No URL to key on; keep it rather than guess it is a duplicate.
+            order.append(id(record))
+            by_url[id(record)] = record
+            continue
+
+        existing = by_url.get(url)
+        if existing is None:
+            by_url[url] = record
+            order.append(url)
+            continue
+
+        merged += 1
+        # Strongest grade wins; on a tie, the longer body wins.
+        better = min(
+            (existing, record),
+            key=lambda r: (_grade_rank(r.content_access_status), -len(r.content or "")),
+        )
+        other = record if better is existing else existing
+
+        seen = list(better.extra.get("also_found_by") or [])
+        for origin in (existing.origin, record.origin):
+            if origin and origin not in seen:
+                seen.append(origin)
+        better.extra = {
+            **better.extra,
+            "also_found_by": seen,
+            "merged_source_ids": sorted(
+                {existing.source_id, record.source_id}
+                | set(better.extra.get("merged_source_ids") or [])
+            ),
+        }
+        # Do not lose a body the weaker record happened to carry.
+        if not better.content and other.content:
+            better.content = other.content
+        by_url[url] = better
+
+    return [by_url[k] for k in order], {"merged": merged, "kept": len(order)}
+
+
+_TITLE_NOISE = re.compile(r"[\s\-—_|｜:：!！?？.,，。、'\"“”‘’()（）\[\]【】]+")
+
+
+def cluster_by_title(records: list[SourceRecord], *, prefix: int = 16) -> dict[str, Any]:
+    """Mark records that cover the same story.
+
+    Chinese outlets repost each other heavily — one run had a single product
+    launch under eight near-identical headlines. They are different URLs so
+    they are not duplicates, but a reader only needs one. Tagging the cluster
+    lets a downstream model skip the rest instead of spending tokens on them.
+    """
+    groups: dict[str, list[SourceRecord]] = {}
+    for record in records:
+        title = (record.title or "").strip()
+        if not title:
+            continue
+        key = _TITLE_NOISE.sub("", title)[:prefix]
+        if len(key) < 6:
+            continue
+        groups.setdefault(key, []).append(record)
+
+    clustered = 0
+    index = 0
+    multi = sorted((g for g in groups.items() if len(g[1]) > 1), key=lambda g: -len(g[1]))
+    for index, (key, members) in enumerate(multi, 1):
+        # The best-evidence member is the one worth reading.
+        members.sort(key=lambda r: (_grade_rank(r.content_access_status), -len(r.content or "")))
+        cluster_id = f"CLUSTER_{index:02d}"
+        for position, record in enumerate(members):
+            record.extra = {
+                **record.extra,
+                "cluster_id": cluster_id,
+                "cluster_size": len(members),
+                "cluster_role": "primary" if position == 0 else "duplicate_coverage",
+            }
+            clustered += 1
+    return {"clusters": index, "records_clustered": clustered}

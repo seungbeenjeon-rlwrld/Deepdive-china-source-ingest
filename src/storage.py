@@ -115,10 +115,24 @@ class LocalStorageBackend(StorageBackend):
         return self.save(relative_path, text + "\n")
 
     def save_source(self, record: SourceRecord, *, index: int) -> dict[str, str]:
-        """Write one preserved source as both Markdown (with front matter) and JSON."""
+        """Write one preserved source as Markdown (front matter) plus JSON.
+
+        The provider's raw payload is dropped from the per-source JSON: it is an
+        echo of what is already in ``raw_*_responses.json`` and accounted for
+        77KB across one run's sources, against 43KB of actual content. A pointer
+        is left so the audit trail still leads back to it.
+        """
         stem = f"{RAW_SOURCES_DIR}/source_{index:03d}"
+        record.extra = {**record.extra, "_file": f"source_{index:03d}.md"}
+
         md = self.save(f"{stem}.md", record.to_markdown())
-        js = self.save_json(f"{stem}.json", record.to_dict())
+
+        payload = record.to_dict()
+        extra = dict(payload.get("extra") or {})
+        if extra.pop("provider_payload", None) is not None:
+            extra["provider_payload"] = "(see raw_*_responses.json for the untouched API payload)"
+        payload["extra"] = extra
+        js = self.save_json(f"{stem}.json", payload)
         return {"markdown": str(md), "json": str(js)}
 
     def write_metadata(self, metadata: RunMetadata) -> Path:

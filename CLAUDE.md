@@ -19,7 +19,8 @@ Claude (지금 이 세션)             →  수집된 것을 읽고 분석
 
 ```
 research/{회사명}/{실행시각}/
-├── metadata.json              실행 상태, 실패 사유, 집계 — 먼저 이걸 읽을 것
+├── 00_INDEX.md                **소스 전체 목록 한 장. 가장 먼저 읽을 것**
+├── metadata.json              실행 상태, 실패 사유, 집계
 ├── 00_name_resolution.json    영어 입력을 중국어 검색명으로 확장한 결과 + 동명이인 목록
 ├── 01_entity_discovery.md     회사 실체·별칭 사전 (사람 가독)
 ├── 01_entity_discovery.json   같은 내용 + 주입된 검색 내역
@@ -36,20 +37,32 @@ research/{회사명}/{실행시각}/
 
 ### 읽는 순서
 
-1. **`metadata.json`** — 어느 단계가 성공/실패했는지. `stage2_status: failed`면 `02_sources`는 불완전함
-2. **`00_name_resolution.md`** — 어떤 이름으로 검색했는지, 그리고 `collisions` 에
+1. **`00_INDEX.md`** — 소스 전체가 한 장에 정리되어 있음. 증거 등급 순으로 정렬되고
+   각 행이 `파일명 / 등급 / 날짜 / 출처 / 제목 / 글자수 / dup` 임.
+   **여기서 읽을 파일을 고른 뒤 그 파일만 열 것.**
+   `dup` 표시는 위에 이미 나온 사건의 중복 보도이므로, 두 번째 관점이 필요한
+   경우가 아니면 건너뛸 것
+2. **`metadata.json`** — 어느 단계가 성공/실패했는지. `stage2_status: failed`면 `02_sources`는 불완전함
+3. **`00_name_resolution.md`** — 어떤 이름으로 검색했는지, 그리고 `collisions` 에
    **동명이인 회사** 목록. 분석 중 이름이 헷갈리면 여기를 볼 것. 이 이름들은
    검색 후보이지 검증된 사실이 아님
-3. **`01_entity_discovery.md`** — 회사의 법인명·별칭·자회사·제품. 이후 모든 검색·대조의 기준
-4. **`raw_sources/`** — 개별 증거. 전문 검색(`grep`)으로 필요한 것만 열 것
-5. 채널별 요약이 필요하면 `04`~`07`의 `.json`
+4. **`01_entity_discovery.md`** — 회사의 법인명·별칭·자회사·제품. 이후 모든 검색·대조의 기준
+5. **`raw_sources/`** — 개별 증거. 전문 검색(`grep`)으로 필요한 것만 열 것
+6. 채널별 요약이 필요하면 `04`~`07`의 `.json`
 
-**전체를 읽지 말 것.** 회사 1개 코퍼스가 컨텍스트 창을 넘김(실측 약 356,000자). `grep`으로 찾아서 해당 파일만 열 것.
+**전체를 읽지 말 것.** 실측: 한 실행이 디스크에 2.3MB 인데 실제 내용은 43KB 임.
+나머지는 `.json` / `.md` 이중 보관과 원본 API 응답이므로, 통째로 읽으면 대부분이
+낭비됨. `00_INDEX.md` 로 고르고, 부족하면 `grep` 으로 좁힐 것.
+
+**같은 파일을 두 형식으로 읽지 말 것.** `02_sources.json` 과 `02_sources.md` 는
+같은 텍스트임. 사람이 읽을 때는 `.md`, 필드 접근이 필요할 때만 `.json` 을 볼 것.
+`raw_*_responses.json` 은 감사용 원본 API 응답이므로 분석에서 읽을 이유가 없음.
 
 ```bash
 # 회사명이 CJK면 경로를 반드시 인용부호로 감쌀 것 (zsh에서 glob이 깨짐)
 RUN="research/智元机器人/2026-09-04_120000"
 
+# 특정 증거 등급만 (인덱스로 부족할 때)
 # 공급업체 관련 소스 찾기
 grep -rl "供应商\|供应链" "$RUN/raw_sources/"
 
@@ -93,6 +106,14 @@ derived:
   label_claimed: "VERBATIM_PARTIAL_TEXT"      ← 모델이 주장했다가 강등된 라벨
   label_downgrade_reason: "..."               ← 강등 사유
 ```
+
+`extra` 에도 읽는 데 도움이 되는 것이 있음:
+
+- `also_found_by` — 두 개 이상의 채널이 같은 URL 을 찾았다는 뜻. 교차 확인 신호임
+- `cluster_id` / `cluster_role` — 같은 사건을 다룬 보도 묶음.
+  `duplicate_coverage` 는 건너뛰어도 됨
+- `provider_payload` — 원본 API 응답은 `raw_*_responses.json` 에 있고 여기에는
+  포인터만 있음
 
 **둘이 다르면 그 자체가 정보임.** `label_claimed`가 있는 소스는 수집 모델이 과장했고 파이프라인이 바로잡은 것임. 그런 소스는 더 보수적으로 다룰 것.
 
