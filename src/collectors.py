@@ -54,7 +54,10 @@ class OfficialSiteConfig:
     page_param: str = "page"
     max_pages: int = 3
     max_articles: int = 40
-    detail_pattern: str = r"/detail/\d+\.html"
+    # Generic by default. The old value was AgiBot's own URL shape
+    # (/detail/<id>.html), so every other company's newsroom matched nothing and
+    # returned "0 articles, 0 failures" — a silent miss.
+    detail_pattern: str = r"/(?:detail|article|news|post|p|a)?/?[\w-]*\d{2,}[\w-]*(?:\.html?)?$"
 
 
 class OfficialSiteCollector:
@@ -98,6 +101,17 @@ class OfficialSiteCollector:
 
         discovered = self.discover()[: self.config.max_articles]
         self.log.info("official site: %d article urls discovered", len(discovered))
+        if not discovered:
+            # Silence here used to look like success. Say what was tried.
+            failures.append({
+                "url": self.config.index_url,
+                "error": (
+                    "no article links matched "
+                    f"detail_pattern={self.config.detail_pattern!r} on this index. "
+                    "The page may be JavaScript-rendered, or the pattern may need "
+                    "adjusting for this site."
+                ),
+            })
 
         for offset, (label, url) in enumerate(discovered):
             try:

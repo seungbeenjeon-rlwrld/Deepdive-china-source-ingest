@@ -2449,3 +2449,103 @@ class TestNameResolution(unittest.TestCase):
             self.assertIn("mentions the company", d["evidence"]["official_site"])
         finally:
             h.cleanup()
+
+
+class TestBugsFoundByRealRuns(unittest.TestCase):
+    """Every case here was produced by an actual run, not imagined."""
+
+    # --- Unitree run: listed entity came out as 创板代码 ------------------
+    def test_stock_code_label_is_not_mistaken_for_a_company(self):
+        from src.parsing import _find_listed_entity
+
+        # "科创板代码：688836" — 创板代码 is a label, not a company.
+        self.assertIsNone(_find_listed_entity("宇树科技-W 科创板代码：688836 上市"))
+
+    def test_real_bracketed_company_still_found(self):
+        from src.parsing import _find_listed_entity
+
+        found = _find_listed_entity("智元取得上纬新材（688585.SH）控制权")
+        self.assertEqual(found["name"], "上纬新材")
+
+    # --- Unitree run: 20 labels normalised, 3 of them wrongly ------------
+    def test_status_with_an_appended_note_keeps_its_grade(self):
+        """The model annotates the field; that must not downgrade the evidence."""
+        from src.parsing import split_status
+
+        status, note = split_status(
+            "VERBATIM_PARTIAL_TEXT（正文全文保留；文末 ETF 推介段落省略）"
+        )
+        self.assertEqual(status, "VERBATIM_PARTIAL_TEXT")
+        self.assertIn("正文全文保留", note)
+
+    def test_annotated_status_survives_verification(self):
+        from src.models import SourceRecord
+        from src.parsing import verify_labels
+
+        rec = SourceRecord(
+            source_id="S1",
+            content_access_status="VERBATIM_PARTIAL_TEXT（正文全文保留）",
+            content="字" * 5000,
+        )
+        audit = verify_labels([rec], {"results": 10, "pages_fetched": 3}, snippet_cap=220)
+        self.assertEqual(rec.content_access_status, "VERBATIM_PARTIAL_TEXT")
+        self.assertEqual(audit["invalid_labels"], 0)
+        self.assertIn("正文全文保留", rec.derived["label_note"])
+
+    def test_genuine_typo_is_still_normalised(self):
+        from src.parsing import split_status
+
+        self.assertEqual(split_status("SEARCH_SNIPPED"), (None, None))
+
+    # --- Unitree run: English newsroom rejected for having no Chinese ----
+    def test_english_page_is_not_rejected(self):
+        """unitree.com/news is a valid English listing from a Chinese company."""
+        from src.fetcher import looks_unusable
+
+        page = ("News Center\n\nKung Fu Meets Spring, Unitree SFG Robots\n\n"
+                "2026-05-31\n\nMedia Coverage\n\n") * 12
+        self.assertIsNone(looks_unusable(page))
+
+    def test_encoded_payload_is_still_rejected(self):
+        from src.fetcher import looks_unusable
+
+        blob = '{"_waf_x":"' + ("A1b2C3d4+/=" * 40) + '"}'
+        self.assertIsNotNone(looks_unusable(blob))
+
+    def test_chinese_page_still_passes(self):
+        from src.fetcher import looks_unusable
+
+        self.assertIsNone(looks_unusable("智元机器人发布远征A2，峰值功率12kW。" * 30))
+
+    # --- Unitree run: newsroom returned 0 articles and 0 failures --------
+    def test_newsroom_pattern_matches_more_than_one_site_shape(self):
+        import re
+
+        from src.collectors import OfficialSiteConfig
+
+        pattern = re.compile(OfficialSiteConfig(index_url="x").detail_pattern)
+        for path in ("/article/315/detail/188.html", "/news/1234",
+                     "/post/2026-robot-launch-77", "/a/20260531"):
+            self.assertTrue(pattern.search(path), path)
+
+    def test_zero_matches_is_reported_not_silent(self):
+        """0 articles with 0 failures once looked like success."""
+        from src.collectors import OfficialSiteCollector, OfficialSiteConfig
+
+        class NoLinks:
+            policy = None
+
+            def fetch(self, url):
+                from src.fetcher import FetchResult
+
+                return FetchResult(url=url, final_url=url, status=200, title="t",
+                                   text="본문", published=None, html_bytes=10,
+                                   links=[("about", "https://x.com/about")])
+
+        collector = OfficialSiteCollector(
+            NoLinks(), OfficialSiteConfig(index_url="https://x.com/news")
+        )
+        records, failures = collector.collect("X")
+        self.assertEqual(records, [])
+        self.assertEqual(len(failures), 1)
+        self.assertIn("no article links matched", failures[0]["error"])

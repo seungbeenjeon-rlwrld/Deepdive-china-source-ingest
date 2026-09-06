@@ -34,7 +34,7 @@ pip install -r requirements.txt
 python -m unittest discover tests
 ```
 
-`OK (192 tests)`가 나오면 정상임. 이 테스트는 네트워크·API 키가 필요 없음.
+`OK (202 tests)`가 나오면 정상임. 이 테스트는 네트워크·API 키가 필요 없음.
 
 ---
 
@@ -334,6 +334,8 @@ python research.py --company "..." --config config.local.yaml
 | `claude cli failed ... Not logged in` | `claude` 를 한 번 실행해 로그인할 것 |
 | `claude cli failed ... usage limit` | 구독 한도 소진. 시간을 두고 재실행 |
 | `claude cli failed ... ENOTFOUND` | 네트워크·DNS 일시 오류. 재실행하면 됨 |
+| `Preserved 0 official articles` + 실패 사유 표시 | 그 사이트 뉴스룸이 JavaScript 렌더링이라 본문을 못 읽음. 다른 채널은 정상 진행됨 |
+| `Indexed 0 exchange filings` | 비상장이거나 상장사명 도출 실패. `--filings "상장사명"` 으로 직접 지정 가능 |
 | `429 monthly quota` (SerpApi) | 월 250건 소진. <https://serpapi.com/dashboard> 확인 |
 | 공시 0건인데 회사는 상장사 | cninfo 504(일시적). 재시도 로직이 있으나 계속되면 잠시 후 다시 |
 | 특허 0건 + `503 throttled` | Google Patents 스로틀. 시간 두고 재시도. 안정성 필요 시 EPO OPS 검토 |

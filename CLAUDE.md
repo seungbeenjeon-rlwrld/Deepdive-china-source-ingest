@@ -174,7 +174,7 @@ python research.py --resume research/智元机器人/2026-09-04_034201 --stage 2
 
 ## 6. 코드를 수정할 때
 
-- 테스트를 먼저 확인할 것: `python -m unittest discover tests` (192개)
+- 테스트를 먼저 확인할 것: `python -m unittest discover tests` (202개)
 - 새 provider는 `ResearchProvider` 서브클래스 + `build_provider()` 등록
 - 기본 provider는 `claude-cli` 임. 즉 파이프라인이 로컬 `claude` 를 서브프로세스로
   호출함. 이 세션 안에서 `python research.py` 를 돌리면 Claude가 중첩 호출됨 —

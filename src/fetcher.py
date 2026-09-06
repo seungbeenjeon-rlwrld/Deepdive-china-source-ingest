@@ -203,11 +203,19 @@ class Fetcher:
 
 
 def looks_unusable(text: str) -> Optional[str]:
-    """Return a reason if ``text`` is clearly not readable article content.
+    """Return a reason if ``text`` is clearly not readable page content.
 
-    Guards against anti-bot payloads that are long enough to pass a length
-    check. Two signals, both cheap: almost no CJK in a page we reached through
-    a Chinese-language search, and a high density of base64/token characters.
+    Guards against anti-bot payloads long enough to pass a length check —
+    xueqiu.com returned 34,071 chars of ``{"_waf_...}`` base64 for four
+    different article URLs.
+
+    It deliberately does **not** judge language. An earlier version rejected any
+    page with almost no Chinese, which threw away unitree.com/news — a perfectly
+    good English news listing from a Chinese company. Chinese companies run
+    English sites; that is not a signal of anything.
+
+    The real signal is structure: encoded blobs have enormous unbroken tokens
+    and almost no separators, which no natural language produces.
     """
     sample = text[:4000]
     if not sample.strip():
@@ -218,15 +226,17 @@ def looks_unusable(text: str) -> Optional[str]:
         return "whitespace only"
 
     cjk = sum(1 for c in letters if "\u4e00" <= c <= "\u9fff")
-    cjk_ratio = cjk / len(letters)
+    words = [t for t in re.split(r"\s+", sample) if t]
+    longest_token = max((len(t) for t in words), default=0)
 
-    # base64/JWT-ish payloads: long runs of [A-Za-z0-9+/=] with no spaces.
-    longest_token = max((len(t) for t in re.split(r"\s+", sample) if t), default=0)
-
-    if cjk_ratio < 0.05 and longest_token > 200:
-        return f"looks like an encoded payload (CJK {cjk_ratio:.1%}, token {longest_token} chars)"
-    if cjk_ratio < 0.02 and len(letters) > 500:
-        return f"almost no Chinese text (CJK {cjk_ratio:.1%})"
+    # Chinese needs no spaces, so an unbroken run is only suspicious when the
+    # text is not Chinese either.
+    if cjk / len(letters) < 0.05:
+        if longest_token > 200:
+            return f"looks like an encoded payload (token {longest_token} chars)"
+        # Neither Chinese characters nor whitespace-separated words.
+        if len(letters) > 500 and len(words) < len(letters) / 100:
+            return "no word structure (likely an encoded blob)"
     return None
 
 

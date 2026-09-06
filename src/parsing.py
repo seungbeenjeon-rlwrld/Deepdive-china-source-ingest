@@ -73,6 +73,14 @@ _NEWS_KEYWORDS = (
 # start with the verb that preceded it ("取得上纬新材").
 _LEADING_VERBS = r"^(取得|收购|入主|控股|参股|持有|旗下|和|与|及|的|为|即)"
 
+# Label words that sit next to a stock code but are not a company name.
+# Measured: "科创板代码：688836" yielded 创板代码 as the listed entity, which then
+# searched cninfo for a phrase and returned nothing.
+_NOT_A_COMPANY = (
+    "代码", "股票", "证券", "板块", "上市", "简称", "指数", "行情", "股价",
+    "主板", "创板", "科创", "创业板", "港股", "美股", "交易", "编号",
+)
+
 
 # Mainland listing codes: 6 digits with an optional exchange suffix.
 _STOCK_CODE = re.compile(r"\b(6\d{5}|00\d{4}|30\d{4})(?:\.(?:SH|SZ|sh|sz))?\b")
@@ -183,6 +191,27 @@ def _parse_one_block(block: list[str], company: str, *, fallback_id: str) -> Sou
     return record
 
 
+def split_status(raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Separate a CONTENT_ACCESS_STATUS from any commentary the model appended.
+
+    Models annotate the field instead of keeping it clean — measured:
+    "VERBATIM_PARTIAL_TEXT（正文全文保留；文末 ETF 推介段落省略）". Treating that as
+    an invalid value normalised genuinely good evidence down to a snippet, which
+    is worse than the mislabelling this check exists to catch. So take the
+    leading known status and keep the rest as a note.
+    """
+    if not raw:
+        return None, None
+    text = raw.strip()
+    for status in CONTENT_ACCESS_STATUSES:
+        if text == status:
+            return status, None
+        if text.startswith(status):
+            note = text[len(status):].strip(" ：:（）()[]，,;；")
+            return status, note or None
+    return None, None
+
+
 def verify_labels(
     records: list[SourceRecord], retrieval: dict[str, Any], *, snippet_cap: int
 ) -> dict[str, Any]:
@@ -204,18 +233,30 @@ def verify_labels(
 
     # Generous threshold: a real partial-text read would exceed the snippet
     # budget by a wide margin.
-    # If pages were actually read, the model legitimately had source text, so
-    # judge claims against that budget rather than the snippet one.
-    if retrieval.get("pages_fetched"):
-        limit = max(int(snippet_cap * 1.5), 400)
-    else:
-        limit = max(int(snippet_cap * 1.5), 400)
+    # Generous threshold: a real partial-text read exceeds the snippet budget by
+    # a wide margin, so this only catches claims the retrieval cannot support.
+    limit = max(int(snippet_cap * 1.5), 400)
     checked = downgraded = invalid = 0
     details: list[dict[str, Any]] = []
     invalid_details: list[dict[str, Any]] = []
 
     for record in records:
         claim = record.content_access_status
+
+        # Models annotate the field instead of keeping it clean — measured:
+        # "VERBATIM_PARTIAL_TEXT（正文全文保留；文末 ETF 推介段落省略）". Recover the
+        # status first, or genuinely good evidence gets normalised down to a
+        # snippet, which is worse than the mislabelling this check exists for.
+        if claim and claim not in CONTENT_ACCESS_STATUSES:
+            recovered, note = split_status(claim)
+            if recovered:
+                record.derived = {
+                    **(record.derived or {}),
+                    "label_raw": claim,
+                    "label_note": note,
+                }
+                record.content_access_status = recovered
+                claim = recovered
 
         # Prompt 2 §6 fixes the permitted vocabulary, but models mistype it —
         # measured: "SEARCH_SNIPPED". An unrecognised value must not be stored
@@ -541,7 +582,7 @@ def _find_listed_entity(text: str) -> Optional[dict[str, str]]:
     )
     for match in bracketed:
         name = re.sub(_LEADING_VERBS, "", match.group(1))
-        if len(name) < 2:
+        if len(name) < 2 or any(bad in name for bad in _NOT_A_COMPANY):
             continue
         key = f"{name}|{match.group(2)}"
         counts[key] = counts.get(key, 0) + 2  # weight the trustworthy form
@@ -553,7 +594,7 @@ def _find_listed_entity(text: str) -> Optional[dict[str, str]]:
             window = text[max(0, match.start() - 8): match.start()]
             name = "".join(re.findall(r"[\u4e00-\u9fff]", window))[-4:]
             name = re.sub(_LEADING_VERBS, "", name)
-            if len(name) < 2:
+            if len(name) < 2 or any(bad in name for bad in _NOT_A_COMPANY):
                 continue
             key = f"{name}|{match.group(1)}"
             counts[key] = counts.get(key, 0) + 1
