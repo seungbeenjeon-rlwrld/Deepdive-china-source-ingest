@@ -34,8 +34,7 @@ DEFAULTS: dict[str, Any] = {
         # The three per-company channel inputs are derived from what stages 0-1
         # found rather than asked for. Locating the newsroom needs one network
         # probe, so it can be turned off independently.
-        "derive_channels": {"enabled": True, "probe_official_site": True,
-                            "probe_filings": True},
+        "derive_channels": {"enabled": True, "probe_filings": True},
         # Expand the one global name the user typed into Chinese search names.
         # Without this, a Chinese index both misses the company and returns
         # same-name companies instead.
@@ -106,16 +105,6 @@ DEFAULTS: dict[str, Any] = {
         "timeout_seconds": 30,
         "max_bytes": 3000000,
         "respect_robots": True,
-    },
-    # The company's own newsroom: a primary source that carries much of what it
-    # also posts to WeChat. Needs a per-company URL, so it is off by default.
-    "official_site": {
-        "enabled": False,
-        "index_url": None,
-        "page_param": "page",
-        "max_pages": 3,
-        "max_articles": 40,
-        "detail_pattern": r"/detail/\d+\.html",
     },
     # For sources whose original is gated, find a readable repost instead.
     "repost_resolution": {"enabled": True, "max_sources": 10},
@@ -246,7 +235,6 @@ class Config:
     research: dict[str, Any]
     search_sweep: dict[str, Any]
     fetch: dict[str, Any]
-    official_site: dict[str, Any]
     repost_resolution: dict[str, Any]
     registries: dict[str, Any]
     tencent: TencentSettings
@@ -407,7 +395,6 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
         research=data.get("research", {}),
         search_sweep=data.get("search_sweep", {}),
         fetch=data.get("fetch", {}),
-        official_site=data.get("official_site", {}),
         repost_resolution=data.get("repost_resolution", {}),
         registries=data.get("registries", {}),
         tencent=tencent,

@@ -59,8 +59,7 @@ class Harness:
         self.config.search_sweep = {**self.config.search_sweep, "provider": None}
         self.config.research = {
             **self.config.research,
-            "derive_channels": {"enabled": True, "probe_official_site": False,
-                                "probe_filings": False},
+            "derive_channels": {"enabled": True, "probe_filings": False},
             "retrieval_injection": {
                 **(self.config.research.get("retrieval_injection") or {}),
                 "enabled": False,
@@ -1539,8 +1538,7 @@ class TestOnlyCompanyNameIsAsked(unittest.TestCase):
             "  derive_channels: {enabled: true, probe_official_site: false, probe_filings: false}\n"
             "search_sweep: {enabled: false, provider: null}\n"
             "repost_resolution: {enabled: false}\n"
-            "official_site: {enabled: false, index_url: null}\n"
-            "registries: {filings_search_key: null, patent_assignee: null}\n",
+                        "registries: {filings_search_key: null, patent_assignee: null}\n",
             encoding="utf-8",
         )
         return cfg
@@ -1584,9 +1582,37 @@ def _derivation_harness(*, probe_filings: bool = False):
     h = Harness(MockProvider())
     h.config.research = {**h.config.research,
                          "derive_channels": {"enabled": True,
-                                             "probe_filings": probe_filings,
-                                             "probe_official_site": False}}
+                                             "probe_filings": probe_filings}}
     return h
+
+
+class TestMockIsOffline(unittest.TestCase):
+    """`--provider mock` is advertised as costing nothing. It must cost nothing.
+
+    It didn't: the sweep resolved to serpapi independently of the LLM provider,
+    so a mock smoke test spent 16 real SerpApi calls on synthetic queries.
+    """
+
+    def test_mock_never_resolves_to_a_networked_search_provider(self):
+        import research
+
+        h = Harness(MockProvider())
+        try:
+            h.config.search_sweep = {**h.config.search_sweep, "provider": "serpapi"}
+            h.config.research = {
+                **h.config.research,
+                "retrieval_injection": {"provider": "serpapi"},
+            }
+            research.pin_offline(h.config)
+            for got in (h.pipeline._sweep_provider(),
+                        h.pipeline._retrieval_provider()):
+                self.assertEqual(got.name, "mock")
+            # and the cninfo probe, which is a network call of its own
+            self.assertFalse(
+                h.config.research["derive_channels"]["probe_filings"]
+            )
+        finally:
+            h.cleanup()
 
 
 class TestChannelDerivation(unittest.TestCase):
@@ -1680,11 +1706,15 @@ class TestChannelDerivation(unittest.TestCase):
             self.assertNotIn(bad, hosts)
 
     def test_probe_is_skipped_when_disabled(self):
-        """Tests and offline runs must not reach the network."""
+        """Tests and offline runs must not reach the network.
+
+        With the probe off, a stage 0 name is only a guess, so it must not be
+        promoted to the filings key on trust alone.
+        """
         h = self._pipeline()
         try:
-            d = h.pipeline.derive_channels({}, "https://www.example.com/a")
-            self.assertIsNone(d["official_site"])
+            d = h.pipeline.derive_channels({"search_names": ["宇树科技"]}, "")
+            self.assertIsNone(d["filings_search_key"])
         finally:
             h.cleanup()
 
@@ -2206,8 +2236,7 @@ class TestStage2OverwriteGuard(unittest.TestCase):
             "  derive_channels: {enabled: true, probe_official_site: false, probe_filings: false}\n"
             "search_sweep: {enabled: false, provider: null}\n"
             "repost_resolution: {enabled: false}\n"
-            "official_site: {enabled: false, index_url: null}\n"
-            "registries: {filings_search_key: null, patent_assignee: null}\n",
+                        "registries: {filings_search_key: null, patent_assignee: null}\n",
             encoding="utf-8",
         )
         return cfg
@@ -2429,64 +2458,6 @@ class TestNameResolution(unittest.TestCase):
         finally:
             h.cleanup()
 
-    def test_newsroom_probe_rejects_an_unrelated_host(self):
-        """Regression: this returned jobui.com's news feed for AgiBot."""
-        from src.fetcher import FetchResult
-
-        h = _derivation_harness()
-        try:
-            h.config.research["derive_channels"]["probe_official_site"] = True
-
-            class Fetcher:
-                def fetch(self, url):
-                    # A job board that has a "news" link but never names the company.
-                    return FetchResult(
-                        url=url, final_url=url, status=200, title="전국 기업 순위",
-                        text="채용 정보 사이트입니다." * 20, published=None,
-                        html_bytes=100,
-                        links=[("news", "https://jobui.com/rank/news/")],
-                    )
-
-            h.pipeline._fetcher = Fetcher()
-            d = h.pipeline.derive_channels(
-                {"search_names": ["智元机器人"], "chinese_names": []},
-                "https://jobui.com/x",
-            )
-            self.assertIsNone(d["official_site"])
-        finally:
-            h.cleanup()
-
-    def test_newsroom_probe_accepts_a_host_that_names_the_company(self):
-        from src.fetcher import FetchResult
-
-        h = _derivation_harness()
-        try:
-            h.config.research["derive_channels"]["probe_official_site"] = True
-
-            class Fetcher:
-                def fetch(self, url):
-                    return FetchResult(
-                        url=url, final_url="https://agibot.com.cn/", status=200,
-                        title="智元机器人 官网", text="智元机器人 " * 30,
-                        published=None, html_bytes=100,
-                        links=[("新闻资讯", "https://agibot.com.cn/article/315")],
-                    )
-
-            h.pipeline._fetcher = Fetcher()
-            d = h.pipeline.derive_channels(
-                {"search_names": ["智元机器人"], "chinese_names": []},
-                "https://agibot.com.cn/about",
-            )
-            self.assertEqual(d["official_site"], "https://agibot.com.cn/article/315")
-            self.assertIn("mentions the company", d["evidence"]["official_site"])
-        finally:
-            h.cleanup()
-
-
-class TestBugsFoundByRealRuns(unittest.TestCase):
-    """Every case here was produced by an actual run, not imagined."""
-
-    # --- Unitree run: listed entity came out as 创板代码 ------------------
     def test_stock_code_label_is_not_mistaken_for_a_company(self):
         from src.parsing import _find_listed_entity
 
@@ -2550,42 +2521,6 @@ class TestBugsFoundByRealRuns(unittest.TestCase):
         self.assertIsNone(looks_unusable("智元机器人发布远征A2，峰值功率12kW。" * 30))
 
     # --- Unitree run: newsroom returned 0 articles and 0 failures --------
-    def test_newsroom_pattern_matches_more_than_one_site_shape(self):
-        import re
-
-        from src.collectors import OfficialSiteConfig
-
-        pattern = re.compile(OfficialSiteConfig(index_url="x").detail_pattern)
-        for path in ("/article/315/detail/188.html", "/news/1234",
-                     "/post/2026-robot-launch-77", "/a/20260531"):
-            self.assertTrue(pattern.search(path), path)
-
-    def test_zero_matches_is_reported_not_silent(self):
-        """0 articles with 0 failures once looked like success."""
-        from src.collectors import OfficialSiteCollector, OfficialSiteConfig
-
-        class NoLinks:
-            policy = None
-
-            def fetch(self, url):
-                from src.fetcher import FetchResult
-
-                return FetchResult(url=url, final_url=url, status=200, title="t",
-                                   text="본문", published=None, html_bytes=10,
-                                   links=[("about", "https://x.com/about")])
-
-        collector = OfficialSiteCollector(
-            NoLinks(), OfficialSiteConfig(index_url="https://x.com/news")
-        )
-        records, failures = collector.collect("X")
-        self.assertEqual(records, [])
-        self.assertEqual(len(failures), 1)
-        self.assertIn("no article links matched", failures[0]["error"])
-
-
-class TestCorpusEfficiency(unittest.TestCase):
-    """A 2.3MB corpus holding 43KB of content wastes a reader's context."""
-
     def _rec(self, sid, url, status, content="", title=None, origin="provider_search"):
         from src.models import SourceRecord
 

@@ -34,7 +34,7 @@ pip install -r requirements.txt
 python -m unittest discover tests
 ```
 
-`OK (214 tests)`가 나오면 정상임. 이 테스트는 네트워크·API 키가 필요 없음.
+`OK (211 tests)`가 나오면 정상임. 이 테스트는 네트워크·API 키가 필요 없음.
 
 ---
 
@@ -161,7 +161,6 @@ python research.py
 | 중국어 검색명 | Stage 0 이 영어 이름을 전개 |
 | 특허 출원인 법인명 | Stage 0 의 `legal_entity` 이름 |
 | 거래소 공시용 상장사명 | 후보 이름을 巨潮资讯网 에 조회해 공시가 나오는 것 |
-| 공식 뉴스룸 URL | Stage 1 이 인용한 관방 도메인의 뉴스 목록 |
 
 Stage 0 이 필요한 이유는 영어 이름만으로 중국 인덱스를 검색하면 **동명이인
 회사가 섞여 나오기 때문**임. 실측: Baidu 에서 `AgiBot` 을 검색하면 수술로봇
@@ -188,14 +187,11 @@ Stage 0 이 필요한 이유는 영어 이름만으로 중국 인덱스를 검�
 [1/2] Discovering company entities...
 ✓ Entity discovery complete
 ✓ Results saved
-  자동 인식 — 공식 뉴스룸: https://www.agibot.com.cn/News/Company
   자동 인식 — 거래소 공시: 上纬新材
   자동 인식 — 특허 출원인: 上海智元新创技术有限公司
 [2/2] Collecting Chinese local sources...
 ✓ Source collection complete
 ✓ Results saved
-[+] Crawling official newsroom: ...
-✓ Preserved 8 official articles in full text
 [+] Fetching exchange filings for 上纬新材...
 ✓ Indexed 20 exchange filings with direct PDF links
 
@@ -238,7 +234,7 @@ python research.py --resume "research/agibot/2026-09-05_120000" --stage 2
 python research.py --resume "research/agibot/2026-09-05_120000" --stage channels
 ```
 
-`--stage channels` 는 공식 뉴스룸·거래소 공시·특허·검색 스윕만 실행하고
+`--stage channels` 는 거래소 공시·특허·검색 스윕만 실행하고
 Stage 1·2 는 건드리지 않음. Stage 2 를 의도적으로 다시 만들려면 `--force` 를
 붙일 것.
 
@@ -314,9 +310,6 @@ python research.py --company "AgiBot"
 `config.yaml` 에 박아두면 됨:
 
 ```yaml
-official_site:
-  enabled: true
-  index_url: "https://www.example.com.cn/news"
 registries:
   filings_search_key: "상장사명"
   patent_assignee: "중국어 법인명"
@@ -343,7 +336,6 @@ python research.py --company "..." --config config.local.yaml
 | `claude cli failed ... Not logged in` | `claude` 를 한 번 실행해 로그인할 것 |
 | `claude cli failed ... usage limit` | 구독 한도 소진. 시간을 두고 재실행 |
 | `claude cli failed ... ENOTFOUND` | 네트워크·DNS 일시 오류. 재실행하면 됨 |
-| `Preserved 0 official articles` + 실패 사유 표시 | 그 사이트 뉴스룸이 JavaScript 렌더링이라 본문을 못 읽음. 다른 채널은 정상 진행됨 |
 | `Indexed 0 exchange filings` | 비상장이거나 상장사명 도출 실패. `--filings "상장사명"` 으로 직접 지정 가능 |
 | `429 monthly quota` (SerpApi) | 월 250건 소진. <https://serpapi.com/dashboard> 확인 |
 | 공시 0건인데 회사는 상장사 | cninfo 504(일시적). 재시도 로직이 있으나 계속되면 잠시 후 다시 |

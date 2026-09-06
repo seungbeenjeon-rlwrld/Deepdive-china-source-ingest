@@ -22,9 +22,7 @@ from .collectors import (
     CNINFO_QUERY_URL,
     PATENTS_QUERY_URL,
     ExchangeFilingCollector,
-    OfficialSiteCollector,
     PatentCollector,
-    OfficialSiteConfig,
     RepostResolver,
     is_gated,
 )
@@ -68,7 +66,6 @@ from .storage import (
 )
 INDEX_MD = "00_INDEX.md"
 NAMES_JSON, NAMES_MD = "00_name_resolution.json", "00_name_resolution.md"
-OFFICIAL_JSON, OFFICIAL_MD = "04_official_site.json", "04_official_site.md"
 FILINGS_JSON, FILINGS_MD = "06_exchange_filings.json", "06_exchange_filings.md"
 PATENTS_JSON, PATENTS_MD = "07_patents.json", "07_patents.md"
 REPOST_JSON, REPOST_MD = "05_reposts.json", "05_reposts.md"
@@ -221,49 +218,6 @@ class Pipeline:
         )
         self.metadata.counts["indexed_sources"] = len(self._saved)
 
-    # -- official newsroom crawl (primary source, prompt 2 §10 priority 2) --
-    def run_official_site(self, company: str, index_url: str) -> dict[str, Any]:
-        cfg = self.config.official_site
-        self._progress(f"[+] Crawling official newsroom: {index_url}")
-        self.metadata.official_site_status = "running"
-        self.storage.write_metadata(self.metadata)
-
-        collector = OfficialSiteCollector(self._get_fetcher(), OfficialSiteConfig(
-            index_url=index_url,
-            page_param=cfg.get("page_param", "page"),
-            max_pages=int(cfg.get("max_pages", 3)),
-            max_articles=int(cfg.get("max_articles", 40)),
-            detail_pattern=cfg.get("detail_pattern", r"/detail/\d+\.html"),
-        ))
-        records, failures = collector.collect(company)
-
-        payload = {
-            "target_company": company,
-            "index_url": index_url,
-            "articles_collected": len(records),
-            "failures": failures,
-            "sources": [r.to_dict() for r in records],
-            "generated_at": utc_now_iso(),
-            "note": (
-                "Crawled from the company's own newsroom, which serves its content to a "
-                "normal request. This is a primary source (prompt 2 §10 priority 2) and "
-                "carries much of the same material the company posts to WeChat."
-            ),
-        }
-        if self.config.output.get("save_json", True):
-            self.storage.save_json(OFFICIAL_JSON, payload)
-        if self.config.output.get("save_markdown", True):
-            self.storage.save(OFFICIAL_MD, _records_markdown(
-                f"Stage 4 — Official Newsroom: {company}", payload, records))
-        self._persist_records(records)
-
-        self.metadata.official_site_status = "completed" if not failures else "completed_with_errors"
-        self.metadata.counts["official_site_articles"] = len(records)
-        self.metadata.counts["official_site_failures"] = len(failures)
-        self.storage.write_metadata(self.metadata)
-        self._progress(f"✓ Preserved {len(records)} official articles in full text")
-        return payload
-
     # -- primary-source registries (prompt 2 §10 priorities 1 and 5) --------
     def run_exchange_filings(self, company: str, search_key: str) -> dict[str, Any]:
         self._progress(f"[+] Fetching exchange filings for {search_key}...")
@@ -353,9 +307,13 @@ class Pipeline:
         if not cfg.get("enabled", True):
             self.metadata.repost_status = "disabled"
             return {"skipped": "disabled in config"}
-        if not self.provider.supports_search:
+        # Search is SerpApi's job, not the chat provider's. Gating on
+        # self.provider meant the default (claude-cli) silently skipped repost
+        # resolution entirely — the same coupling bug the sweep already had.
+        searcher = self._retrieval_provider()
+        if not searcher.supports_search:
             self.metadata.repost_status = "unsupported"
-            return {"skipped": f"provider {self.provider.name} has no structured search"}
+            return {"skipped": f"search provider {searcher.name} has no structured search"}
 
         blocked = [
             SourceRecord(**{k: v for k, v in s.items() if k in SourceRecord.__annotations__})
@@ -372,12 +330,17 @@ class Pipeline:
         self.storage.write_metadata(self.metadata)
 
         def search(title: str) -> list[dict[str, Any]]:
-            return self.provider.search(title, count=10).get("pages", [])
+            return searcher.search(title, count=10).get("pages", [])
 
-        official_index = self.config.official_site.get("index_url")
-        official_hosts: list[str] = []
-        if official_index:
-            official_hosts.append(urlparse(official_index).netloc)
+        # Reposts on the company's own domain are preferred over media rewrites.
+        # The candidate hosts come from the sources already in hand rather than
+        # from a configured newsroom URL.
+        official_hosts = _official_host_candidates(
+            "\n".join(
+                (s.get("canonical_url") or s.get("retrieval_url") or "")
+                for s in sources
+            )
+        )
         resolver = RepostResolver(
             self._get_fetcher(), search, official_hosts=official_hosts
         )
@@ -568,18 +531,16 @@ class Pipeline:
     def derive_channels(
         self, names_meta: dict[str, Any], stage1_text: str
     ) -> dict[str, Any]:
-        """Work out the three channel inputs from what stages 0-1 already found.
+        """Work out the channel inputs from what stages 0-1 already found.
 
-        These used to be three interactive questions, which was the same mistake
-        as asking the user for Chinese names: the pipeline already knows them.
+        These used to be interactive questions, which was the same mistake as
+        asking the user for Chinese names: the pipeline already knows them.
 
         - patent assignee  -> stage 0's legal-entity name
-        - listed entity    -> a stock code in stage 1's output, with its name
-        - newsroom index   -> stage 1's most-cited official domain, then its
-                              news listing page
+        - listed entity    -> a candidate name that 巨潮资讯网 actually answers for
         """
         derived: dict[str, Any] = {"patent_assignee": None, "filings_search_key": None,
-                                   "official_site": None, "evidence": {}}
+                                   "evidence": {}}
         cfg = self.config.research.get("derive_channels") or {}
 
         # 1) Patent assignee: the registered legal entity, not the brand.
@@ -629,18 +590,6 @@ class Pipeline:
             derived["evidence"]["filings_search_key"] = why
             break
 
-        # 3) Newsroom index: find the official domain, then its news listing.
-        # This one needs a network probe, so it is separately switchable — tests
-        # and offline runs must not reach out.
-        site = (
-            self._find_newsroom(stage1_text, names_meta)
-            if cfg.get("probe_official_site", True)
-            else None
-        )
-        if site:
-            derived["official_site"] = site["url"]
-            derived["evidence"]["official_site"] = site["why"]
-
         return derived
 
     def _has_filings(self, search_key: str) -> bool:
@@ -662,63 +611,6 @@ class Pipeline:
             self.log.info("filings found under %r", search_key)
         return bool(records)
 
-    def _find_newsroom(
-        self, stage1_text: str, names_meta: dict[str, Any]
-    ) -> Optional[dict[str, str]]:
-        """Locate the company's own news listing page.
-
-        Two checks matter. The host has to actually be the company's — stage 1
-        cites job boards and quote pages too, and without verification this
-        happily returned jobui.com's news feed. And the link has to be a listing
-        page, not one article.
-        """
-        hosts = _official_host_candidates(stage1_text)
-        if not hosts:
-            return None
-
-        # Tokens that confirm a homepage really belongs to the target. Full
-        # names are too strict: the brand is 智元机器人 but the official site
-        # titles itself 智元创新（上海）科技股份有限公司, sharing only 智元.
-        raw_names = [n for n in (names_meta.get("search_names") or []) if n]
-        for entry in names_meta.get("chinese_names") or []:
-            if isinstance(entry, dict) and entry.get("name"):
-                raw_names.append(entry["name"])
-        if names_meta.get("canonical_english"):
-            raw_names.append(str(names_meta["canonical_english"]))
-        expected = _identity_tokens(raw_names)
-
-        fetcher = self._get_fetcher()
-        for host in hosts[:4]:
-            try:
-                page = fetcher.fetch(f"https://{host}/")
-            except (FetchError, FetchBlocked) as exc:
-                self.log.debug("newsroom probe failed for %s: %s", host, exc)
-                continue
-            if page.blocked:
-                continue
-
-            # Does this site actually claim to be the company?
-            haystack = f"{page.title or ''} {(page.text or '')[:3000]}"
-            if expected and not any(name in haystack for name in expected):
-                self.log.debug("%s does not mention the company — skipping", host)
-                continue
-
-            final_host = urlparse(page.final_url).netloc.lower().removeprefix("www.")
-            for label, url in page.links:
-                link_host = urlparse(url).netloc.lower().removeprefix("www.")
-                if link_host not in (host, final_host):
-                    continue
-                path = urlparse(url).path
-                if not any(k in f"{label} {url}".lower() for k in _NEWS_KEYWORDS):
-                    continue
-                # A listing page, not an individual article.
-                if re.search(r"/detail/\d+|/\d{6,}|\.html?$", path) and "list" not in path:
-                    continue
-                return {"url": url, "why": f"news link on https://{final_host}/ "
-                                          f"(page mentions the company)"}
-        return None
-
-    # -- retrieval we control, injected into the stage prompts -------------
     def build_retrieval_block(
         self, company: str, queries: list[str]
     ) -> tuple[Optional[str], dict[str, Any]]:
@@ -781,8 +673,7 @@ class Pipeline:
         # Snippets alone give the model nothing to preserve — measured, it then
         # emits source blocks with metadata and an empty SOURCE_CONTENT. So
         # fetch the top results' actual pages and inject their text. The same
-        # fetcher that crawls the official newsroom does this; gated hosts are
-        # never fetched.
+        # fetcher does this; gated hosts are never fetched.
         fetched = 0
         fetch_failures: list[dict[str, str]] = []
         if fetch_pages:

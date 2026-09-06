@@ -27,7 +27,6 @@ research/{회사명}/{실행시각}/
 ├── 02_sources.md              수집 모델의 출력 원문
 ├── 02_sources.json            소스 색인 + 라벨 감사 결과
 ├── 03_search_sweep.json       Baidu 구조화 검색 결과
-├── 04_official_site.json      공식 뉴스룸 기사 전문
 ├── 05_reposts.json            차단된 소스의 재게시본
 ├── 06_exchange_filings.json   거래소 공시 + PDF 직링크
 ├── 07_patents.json            특허
@@ -126,10 +125,9 @@ derived:
 | 순위 | 소스 | 코퍼스 내 위치 |
 | --- | --- | --- |
 | 1 | 거래소·정부 공시 | `06_exchange_filings.json`, `origin: exchange_filing_registry` |
-| 2 | 회사 공식 자료 | `04_official_site.json`, `origin: official_site_crawl` |
-| 3 | 특허·논문 | `07_patents.json`, `origin: patent_registry` |
-| 4 | 고품질 산업·경제 매체 | `origin: provider_search` 중 언론사 도메인 |
-| 5 | 재게시본 | `05_reposts.json`, `origin: repost_resolution` |
+| 2 | 특허·논문 | `07_patents.json`, `origin: patent_registry` |
+| 3 | 고품질 산업·경제 매체 | `origin: provider_search` 중 언론사 도메인 |
+| 4 | 재게시본 | `05_reposts.json`, `origin: repost_resolution` |
 | 6 | 검색 스니펫 | `origin: provider_search`, `SEARCH_SNIPPET_ONLY` |
 
 **재게시본 주의.** `05_reposts.json`의 자료는 원본이 차단되어 다른 곳에서 가져온 것임.
@@ -188,8 +186,8 @@ python research.py --company "智元机器人" \
 python research.py --resume research/智元机器人/2026-09-04_034201 --stage 2
 ```
 
-새 회사를 조사하려면 세 값이 필요함 — 공식 뉴스룸 URL, 상장사명(있으면), 특허 출원인 법인명.
-`01_entity_discovery.md`의 법인명 항목에서 세 번째 값을 찾을 수 있음.
+새 회사를 조사할 때 필요한 값(상장사명, 특허 출원인 법인명)은 파이프라인이 스스로
+도출하므로, 회사명 하나만 넘기면 됨.
 
 ---
 

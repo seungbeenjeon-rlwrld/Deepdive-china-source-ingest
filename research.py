@@ -43,11 +43,33 @@ BANNER = """========================================
 ========================================"""
 
 
+def pin_offline(config) -> None:
+    """Make `--provider mock` actually offline.
+
+    It was advertised as a free smoke test but only the LLM was mocked: the
+    sweep and retrieval injection still resolved to serpapi and spent real
+    quota on synthetic queries like "MockBot A1 参数". Mock means mock all the
+    way down.
+    """
+    config.search_sweep = {**config.search_sweep, "provider": "mock"}
+    config.research = {
+        **config.research,
+        "retrieval_injection": {
+            **(config.research.get("retrieval_injection") or {}),
+            "provider": "mock",
+        },
+        "derive_channels": {
+            **(config.research.get("derive_channels") or {}),
+            "probe_filings": False,
+        },
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="research.py",
         description="Collect Chinese local research sources for a target company: "
-                    "Baidu search, the official newsroom, 巨潮资讯网 filings and "
+                    "Baidu search, 巨潮资讯网 filings and "
                     "CNIPA patents, saved as a graded evidence corpus.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -65,7 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["1", "2", "all", "channels"],
         default="all",
         help="which stage to run (default: all). 'channels' runs only the "
-             "collection channels (newsroom, filings, patents, sweep) against a "
+             "collection channels (filings, patents, sweep) against a "
              "saved run, leaving stages 1-2 untouched.",
     )
     parser.add_argument(
@@ -79,12 +101,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="override config provider",
     )
     parser.add_argument("--config", help="path to a config file (default: ./config.yaml)")
-    parser.add_argument(
-        "--official-site",
-        metavar="INDEX_URL",
-        help="crawl this newsroom index for full-text official articles "
-             "(e.g. https://www.agibot.com.cn/article/315)",
-    )
     parser.add_argument(
         "--filings",
         metavar="LISTED_NAME",
@@ -177,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     provider_name = args.provider or config.provider
+    if provider_name == "mock":
+        pin_offline(config)
     if args.no_search_sweep:
         config.search_sweep = {**config.search_sweep, "enabled": False}
     if args.no_reposts:
@@ -252,13 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         storage.attach_run(latest)
         resume_dir = latest
 
-    official_index = args.official_site or config.official_site.get("index_url")
     filings_key = args.filings or config.registries.get("filings_search_key")
     patent_assignee = args.patents or config.registries.get("patent_assignee")
-    if official_index:
-        config.official_site = {
-            **config.official_site, "enabled": True, "index_url": official_index
-        }
 
     # ---- provider ------------------------------------------------------
     try:
@@ -348,7 +361,6 @@ def main(argv: list[str] | None = None) -> int:
                 result.parsed.get("name_resolution") or {}, stage1_text
             )
             for key, current, label in (
-                ("official_site", official_index, "공식 뉴스룸"),
                 ("filings_search_key", filings_key, "거래소 공시"),
                 ("patent_assignee", patent_assignee, "특허 출원인"),
             ):
@@ -359,12 +371,7 @@ def main(argv: list[str] | None = None) -> int:
                 say(f"  자동 인식 — {label}: {value}")
                 if why:
                     log.info("derived %s=%r (%s)", key, value, why)
-                if key == "official_site":
-                    official_index = value
-                    config.official_site = {
-                        **config.official_site, "enabled": True, "index_url": value
-                    }
-                elif key == "filings_search_key":
+                if key == "filings_search_key":
                     filings_key = value
                 else:
                     patent_assignee = value
@@ -456,18 +463,6 @@ def main(argv: list[str] | None = None) -> int:
         storage.write_metadata(metadata)
         say("\nInterrupted. Stage 1 results are intact.")
         return 130
-
-    # ---- official newsroom crawl ---------------------------------------
-    # Independent of the search API: the company's own site serves full text.
-    if exit_code == 0 and official_index:
-        try:
-            say()
-            pipeline.run_official_site(company, official_index)
-        except Exception as exc:
-            metadata.official_site_status = "failed"
-            storage.write_metadata(metadata)
-            log.warning("official site crawl failed: %s", exc)
-            say(f"  official newsroom crawl failed ({exc}) — earlier results unaffected")
 
     # ---- primary-source registries -------------------------------------
     # Independent of every other stage: open registry endpoints, no account.

@@ -104,18 +104,6 @@ fetch:
   max_bytes: 3000000
   respect_robots: true
 
-# The company's own newsroom. A primary source (prompt 2 §10 priority 2) that
-# carries much of the same material the company posts to WeChat — and unlike
-# WeChat it serves full text to a normal request. Needs a per-company URL, so
-# pass it with --official-site or set index_url here.
-official_site:
-  enabled: false
-  index_url: null              # e.g. https://www.agibot.com.cn/article/315
-  page_param: page
-  max_pages: 3
-  max_articles: 40
-  detail_pattern: '/detail/\d+\.html'
-
 # For sources whose original is gated (WeChat), find a readable repost. The
 # repost is saved as its OWN source linked to the original; the original's
 # URL_ONLY label is never overwritten.

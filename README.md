@@ -130,7 +130,6 @@ Stage 1에서 얻은 이름과 검색어를 기반으로 중국 웹을 본격적
 주요 채널:
 
 - Baidu 검색
-- 회사 공식 뉴스룸
 - 거래소 공시
 - 특허
 - 정부·입찰 사이트
@@ -140,14 +139,13 @@ Stage 1 결과는 요약하지 않고 그대로 Stage 2에 전달함. 따라서 
 
 ### 채널 입력값은 물어보지 않고 스스로 판단함
 
-공식 뉴스룸 주소, 상장사명, 특허 출원인 — 전수 열거에 필요한 이 세 값은 사용자가
-입력하지 않음. Stage 0·1 이 이미 알고 있는 정보이므로 파이프라인이 직접 정함.
+상장사명과 특허 출원인 — 전수 열거에 필요한 이 값들은 사용자가 입력하지 않음.
+Stage 0·1 이 이미 알고 있는 정보이므로 파이프라인이 직접 정함.
 
 | 값 | 판단 근거 |
 | --- | --- |
 | 특허 출원인 | Stage 0 이 찾은 법인명 (지주회사·合伙企业 제외) |
 | 상장사명 | 후보 이름을 巨潮资讯网 에 실제로 조회해 공시가 나오는 것을 채택 |
-| 공식 뉴스룸 | Stage 1 이 가장 많이 인용한 공식 도메인의 뉴스 목록 페이지 |
 
 상장사명을 문장에서 정규식으로 뽑던 방식은 폐기함. 중국어에는 띄어쓰기가 없어
 `科创板代码：688836` 에서 `创板代码`, `客户集中度` 에서 `户集中度` 같은 문장 조각이
@@ -204,14 +202,12 @@ Baidu 자체 공식 Search API는 현재 사용할 수 없기 때문에 SerpApi�
 
 | 채널 | 수집 방식 |
 | --- | --- |
-| 회사 공식 뉴스룸 | 전체 기사 목록 순회 |
 | 거래소 공시 | 해당 기업 관련 공시 전체 조회 |
 | 특허 | 출원인 기준 전체 특허 조회 |
 
 AgiBot 테스트에서는:
 
 - 거래소 공시 **652건**
-- 공식 뉴스 **62건**
 - 특허 **272건**
 
 을 확인함.
@@ -330,7 +326,6 @@ research/
         ├── 01_entity_discovery.md
         ├── 02_sources.md
         ├── 03_search_sweep.md
-        ├── 04_official_site.md
         ├── 05_reposts.md
         ├── 06_exchange_filings.md
         ├── 07_patents.md
@@ -350,7 +345,7 @@ research/
 
 ### 중복 제거와 색인
 
-채널이 여러 개이므로 같은 URL을 Baidu 와 공식 사이트가 동시에 잡는 일이 흔함.
+채널이 여러 개이므로 같은 URL을 Baidu 와 다른 채널이 동시에 잡는 일이 흔함.
 같은 URL 을 두 번 저장하지 않되, **두 채널이 같은 자료를 찾았다는 사실 자체는
 교차 검증이므로 버리지 않음**. 병합할 때 증거 수준이 높은 쪽과 본문이 긴 쪽을
 남기고, 어느 채널들이 찾았는지는 `also_found_by` 에 기록함.
@@ -409,15 +404,12 @@ content_access_status: URL_ONLY
 
 **Baidu 검색 결과 사이트** — 중국 로컬 정보 발견에는 매우 유용하지만 자동 본문 접근 성공률은 낮음. 따라서 Baidu의 역할은 주로 **새로운 Source와 Entity 발견**임.
 
-**공식 사이트** — 본문 확보에 가장 안정적임. **실제 전문 확보**에 활용.
-
 **거래소 공시** — 기업의 법적·재무적 관계를 확인할 수 있는 가장 강한 1차 자료 중 하나임. **공식 Evidence 확보**에 활용.
 
 정리하면:
 
 ```
 Baidu       → 새로운 정보 발견
-공식 사이트  → 실제 본문 확보
 거래소 공시  → 강한 1차 증거 확보
 특허        → 기술·R&D 관계 확인
 ```
@@ -526,7 +518,7 @@ python research.py
 
 
 
-회사명 하나만 주면 나머지(중국어 이름, 뉴스룸, 상장사명, 특허 출원인)는 전부
+회사명 하나만 주면 나머지(중국어 이름, 상장사명, 특허 출원인)는 전부
 파이프라인이 알아서 정함.
 
 ```bash
@@ -538,7 +530,6 @@ python research.py --company "X" --provider mock   # 오프라인 테스트, 키
 
 ```bash
 python research.py --company "AgiBot" \
-  --official-site "https://www.agibot.com.cn/article/315" \
   --filings "上纬新材" \
   --patents "上海智元新创技术有限公司"
 ```
@@ -557,7 +548,6 @@ python research.py --resume ./research/unitree/2026-09-07_005223 --stage channel
 | `--stage {1,2,all,channels}` | 실행 단계. 기본 `all`. `channels` 는 수집 채널만 실행하고 Stage 1·2 를 보존함 |
 | `--force` | 완료된 Stage 2 를 의도적으로 덮어씀 |
 | `--resume RUN_DIR` | 해당 실행의 Stage 1 결과를 재사용 |
-| `--official-site URL` | 공식 뉴스룸 전체 순회. 생략 시 자동 판단 |
 | `--filings LISTED_NAME` | 거래소 공시 전체 조회. 생략 시 자동 판단 |
 | `--patents ASSIGNEE` | 특허 전체 조회. 생략 시 자동 판단 |
 | `--provider {claude-cli,zhipu,tencent,serpapi,mock}` | provider 강제 지정 |
@@ -566,12 +556,10 @@ python research.py --resume ./research/unitree/2026-09-07_005223 --stage channel
 
 ### 회사별 설정
 
-세 값은 기본적으로 자동 판단되므로 보통은 건드릴 필요 없음. 자동 판단을 고정하고
+두 값은 기본적으로 자동 판단되므로 보통은 건드릴 필요 없음. 자동 판단을 고정하고
 싶을 때만 `config.yaml` 에 넣으면 됨.
 
 ```yaml
-official_site:
-  index_url: "https://www.agibot.com.cn/article/315"   # 공식 뉴스룸
 registries:
   filings_search_key: "上纬新材"                        # 상장사명 (있는 경우)
   patent_assignee: "上海智元新创技术有限公司"             # 특허 출원인 법인명
@@ -585,7 +573,7 @@ registries:
 python -m unittest discover tests -v
 ```
 
-214개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
+211개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
 
 ---
 
