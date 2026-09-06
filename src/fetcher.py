@@ -337,6 +337,39 @@ def _node_text(node) -> str:
     if not parts:
         text = " ".join(node.get_text(" ", strip=True).split())
         return text
-    # Collapse consecutive duplicates that nested markup often produces.
-    deduped = [p for i, p in enumerate(parts) if i == 0 or p != parts[i - 1]]
-    return "\n\n".join(deduped).strip()
+    # Nested markup emits a parent block and then its children, so the repeats
+    # are progressively truncated rather than identical — thepaper.cn gave the
+    # same byline three times, each shorter than the last. Dropping a block
+    # wholly contained in the one before it collapses all of that; nothing is
+    # lost, since the longer block still carries the text.
+    deduped: list[str] = []
+    for part in parts:
+        if deduped and part in deduped[-1]:
+            continue
+        deduped.append(part)
+    return _strip_leading_chrome(deduped)
+
+
+def _strip_leading_chrome(blocks: list[str]) -> str:
+    """Drop the nav stubs that sit above the article.
+
+    Measured on recovered reposts: "下载客户端 / 登录 / 无障碍 / +1" preceded one
+    headline, and "首页 → 财经中心 → 财经频道 分享到：" preceded another. Nav stubs
+    are short, and breadcrumbs are recognisable by their separator, so cut
+    leading blocks matching either and stop at the first real one — a headline
+    clears both bars comfortably.
+    """
+    start = 0
+    while start < len(blocks) and _is_chrome(blocks[start]):
+        start += 1
+    if start >= len(blocks):
+        start = 0  # it was chrome all the way down; keep it over returning nothing
+    return "\n\n".join(blocks[start:]).strip()
+
+
+def _is_chrome(block: str) -> bool:
+    # 8, not 12: at 12 this ate the headline "宇树科技回应公司更名" (10 chars).
+    # Losing a headline costs more than leaving the odd nav stub in place.
+    if len(block) < 8:
+        return True
+    return len(block) < 40 and any(sep in block for sep in ("→", "›", " > ", "»"))

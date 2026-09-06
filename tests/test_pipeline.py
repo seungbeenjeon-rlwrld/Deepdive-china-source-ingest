@@ -791,6 +791,44 @@ class TestGatedHosts(unittest.TestCase):
             self.assertFalse(is_gated(url))
 
 
+class TestChromeStripping(unittest.TestCase):
+    """Page furniture must not be filed as article text."""
+
+    def _text(self, html):
+        from src.fetcher import extract
+
+        return extract(html)[1] or ""
+
+    def test_nav_stubs_above_the_headline_are_dropped(self):
+        html = ("<div><p>下载客户端</p><p>登录</p><p>无障碍</p><p>+1</p>"
+                "<p>宇树发布人形机器人H2训练视频：展现空翻、踹沙袋等动作</p>"
+                "<p>" + "1月4日，宇树科技发布人形机器人H2的日常训练视频。" * 6 + "</p></div>")
+        text = self._text(html)
+        self.assertFalse(text.startswith("下载客户端"), text[:40])
+        self.assertTrue(text.startswith("宇树发布人形机器人H2"), text[:40])
+
+    def test_a_short_headline_is_not_mistaken_for_chrome(self):
+        """A 12-char cut ate the 10-char headline "宇树科技回应公司更名"."""
+        html = ("<div><p>宇树科技回应公司更名</p>"
+                "<p>" + "2025年5月30日，宇树科技就公司更名一事作出回应。" * 6 + "</p></div>")
+        self.assertTrue(self._text(html).startswith("宇树科技回应公司更名"))
+
+    def test_breadcrumbs_are_dropped(self):
+        html = ("<div><p>首页 → 财经中心 → 财经频道 分享到：</p>"
+                "<p>宇树科技回应公司更名</p>"
+                "<p>" + "公司就更名一事作出了正式回应内容如下。" * 8 + "</p></div>")
+        self.assertTrue(self._text(html).startswith("宇树科技回应公司更名"))
+
+    def test_progressively_truncated_repeats_collapse(self):
+        """thepaper.cn emitted the same byline three times, each shorter."""
+        byline = "2026-01-04 21:18 来源： 澎湃新闻·澎湃号·媒体 字号"
+        html = ("<div><p>" + byline + "</p>"
+                "<p>2026-01-04 21:18 来源： 澎湃新闻·澎湃号·媒体</p>"
+                "<p>2026-01-04 21:18</p>"
+                "<p>" + "宇树科技发布了人形机器人H2的日常训练视频内容。" * 6 + "</p></div>")
+        self.assertEqual(self._text(html).count("澎湃新闻·澎湃号·媒体"), 1)
+
+
 class TestRepostLabelling(unittest.TestCase):
     """A repost's full text is the repost's, not the original's."""
 
