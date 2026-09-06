@@ -794,14 +794,20 @@ class TestGatedHosts(unittest.TestCase):
 class TestRepostLabelling(unittest.TestCase):
     """A repost's full text is the repost's, not the original's."""
 
-    def _resolver(self, page_text="正文" * 200):
+    # A real repost carries the original's headline; the resolver now checks
+    # for that rather than keeping whatever page it managed to fetch first.
+    STORY = "智元第10,000台正式下线！"
+
+    def _resolver(self, page_text=None, page_title=None):
+        page_text = page_text if page_text is not None else (self.STORY + "正文" * 400)
+        page_title = page_title if page_title is not None else "转载：" + self.STORY
         from src.collectors import RepostResolver
         from src.fetcher import FetchResult
 
         class FakeFetcher:
             def fetch(self, url):
                 return FetchResult(url=url, final_url=url, status=200,
-                                   title="转载标题", text=page_text,
+                                   title=page_title, text=page_text,
                                    published="2026-03-31", html_bytes=1000)
 
         def search(_title):
@@ -816,7 +822,7 @@ class TestRepostLabelling(unittest.TestCase):
         from src.models import SourceRecord
 
         return SourceRecord(
-            source_id="SOURCE_010", title="智元第10,000台正式下线！",
+            source_id="SOURCE_010", title=self.STORY,
             retrieval_url="https://mp.weixin.qq.com/s/orig",
             canonical_url="https://mp.weixin.qq.com/s/orig",
             content_access_status="URL_ONLY", matched_entity="远征 A3",
@@ -843,6 +849,43 @@ class TestRepostLabelling(unittest.TestCase):
         records, _ = self._resolver().resolve([self._original()], "AgiBot")
         self.assertNotIn("weixin", records[0].retrieval_url)
 
+    def test_an_unrelated_page_is_not_filed_as_a_repost(self):
+        """The Unitree run filed a Baidu results page and an unrelated landing
+        page as full-text reposts of a WeChat post."""
+        records, gaps = self._resolver(
+            page_text="欢迎访问本站" * 200, page_title="Unitree Robotics"
+        ).resolve([self._original()], "AgiBot")
+        self.assertEqual(records, [])
+        self.assertEqual(
+            gaps[0]["reason"], "no readable repost carrying the same story"
+        )
+
+    def test_video_pages_are_never_reposts(self):
+        """Two video pages were filed as full-text reposts on player chrome."""
+        from src.collectors import _is_video_page
+
+        for url in ("https://haokan.baidu.com/v?vid=1",
+                    "https://m.bilibili.com/video/BV1nTs3zyEhT",
+                    "https://v.qq.com/x/page/a.html"):
+            self.assertTrue(_is_video_page(url), url)
+        self.assertFalse(_is_video_page("https://www.cnr.cn/a/1.shtml"))
+
+    def test_player_chrome_is_too_short_to_be_full_text(self):
+        records, gaps = self._resolver(
+            page_text=self.STORY + "1612次播放", page_title="转载：" + self.STORY
+        ).resolve([self._original()], "AgiBot")
+        self.assertEqual(records, [])
+        self.assertTrue(gaps)
+
+    def test_search_result_pages_are_never_candidates(self):
+        from src.collectors import _is_serp
+
+        for url in ("https://www.baidu.com/s?tn=news&wd=x",
+                    "https://www.google.com/search?q=x",
+                    "https://www.sogou.com/web?query=x"):
+            self.assertTrue(_is_serp(url), url)
+        self.assertFalse(_is_serp("https://www.cnr.cn/a/1.shtml"))
+
     def test_unresolvable_source_becomes_a_gap(self):
         from src.collectors import RepostResolver
         from src.fetcher import FetchError
@@ -854,7 +897,9 @@ class TestRepostLabelling(unittest.TestCase):
         resolver = RepostResolver(DeadFetcher(), lambda t: [{"url": "https://x.com/a"}])
         records, gaps = resolver.resolve([self._original()], "AgiBot")
         self.assertEqual(records, [])
-        self.assertEqual(gaps[0]["reason"], "no readable repost found")
+        self.assertEqual(
+            gaps[0]["reason"], "no readable repost carrying the same story"
+        )
 
 
 import contextlib as _contextlib

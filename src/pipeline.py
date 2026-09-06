@@ -65,6 +65,9 @@ from .storage import (
     md_document,
 )
 INDEX_MD = "00_INDEX.md"
+
+# Statuses that mean "we never got the article body".
+_NO_BODY_STATUSES = ("URL_ONLY", "SEARCH_SNIPPET_ONLY")
 NAMES_JSON, NAMES_MD = "00_name_resolution.json", "00_name_resolution.md"
 FILINGS_JSON, FILINGS_MD = "06_exchange_filings.json", "06_exchange_filings.md"
 PATENTS_JSON, PATENTS_MD = "07_patents.json", "07_patents.md"
@@ -318,7 +321,11 @@ class Pipeline:
         blocked = [
             SourceRecord(**{k: v for k, v in s.items() if k in SourceRecord.__annotations__})
             for s in sources
-            if s.get("content_access_status") == "URL_ONLY"
+            # Both statuses mean the same thing here: the body was never
+            # retrieved. Gating on URL_ONLY alone missed every gated WeChat
+            # source that Baidu had given a snippet for — measured, that was
+            # all 60 of them in the Unitree run, so nothing was ever resolved.
+            if s.get("content_access_status") in _NO_BODY_STATUSES
             and is_gated(s.get("canonical_url") or s.get("retrieval_url"))
         ]
         if not blocked:

@@ -48,6 +48,63 @@ def is_gated(url: Optional[str]) -> bool:
     return any(g in host for g in GATED_HOSTS)
 
 
+# Search engines answer a title query with their own results page, which is
+# fetchable, long, and completely worthless as a source.
+_SERP_HOSTS = (
+    "baidu.com/s", "google.com/search", "bing.com/search", "sogou.com/web",
+    "so.com/s", "sm.cn/s", "yandex.com/search", "duckduckgo.com",
+    "search.cctv.com", "so.toutiao.com",
+)
+
+
+def _is_serp(url: str) -> bool:
+    u = (url or "").lower()
+    return any(marker in u for marker in _SERP_HOSTS)
+
+
+# A video page carries no article body — what the extractor returns is player
+# chrome (play counts, timestamps, "下载客户端"). Measured on the Unitree corpus:
+# two such pages were filed as VERBATIM_FULL_TEXT reposts on 224 and 434 chars.
+# The pipeline does not pull transcripts, so a video cannot stand in for the
+# gated article's text.
+_VIDEO_MARKERS = (
+    "haokan.baidu.com/v", "bilibili.com/video", "v.qq.com", "youku.com",
+    "ixigua.com", "douyin.com", "kuaishou.com", "iqiyi.com", "tv.sohu.com",
+    "weibo.com/tv", "video.weibo.com", "miaopai.com", "/video/",
+)
+
+# A genuine repost runs to paragraphs. 200 chars let player chrome through.
+_MIN_REPOST_CHARS = 500
+
+
+def _is_video_page(url: str) -> bool:
+    u = (url or "").lower()
+    return any(marker in u for marker in _VIDEO_MARKERS)
+
+
+def _bigrams(text: str) -> set[str]:
+    """Character bigrams. Chinese has no spaces, so words are not separable."""
+    cleaned = re.sub(r"[\s\W_]+", "", text or "")
+    return {cleaned[i:i + 2] for i in range(len(cleaned) - 1)}
+
+
+def _is_same_story(original_title: str, candidate_title: str, body: str) -> bool:
+    """Does this candidate actually carry the gated article, or just turn up?
+
+    Without this the resolver kept the first page it could fetch. Measured on
+    the Unitree corpus that meant a Baidu results page and an unrelated
+    company landing page were both filed as full-text reposts of a WeChat
+    post — labelled VERBATIM_FULL_TEXT, which is exactly the kind of evidence
+    inflation the pipeline exists to prevent.
+    """
+    wanted = _bigrams(original_title)
+    if len(wanted) < 4:
+        return False  # too short to judge; refuse rather than guess
+    if len(wanted & _bigrams(candidate_title)) / len(wanted) >= 0.5:
+        return True
+    return len(wanted & _bigrams(body[:4000])) / len(wanted) >= 0.7
+
+
 class RepostResolver:
     """Finds a readable repost for sources whose original cannot be fetched."""
 
@@ -100,7 +157,7 @@ class RepostResolver:
             tried: list[str] = []
             for candidate in candidates:
                 url = (candidate.get("url") or "").strip()
-                if not url or is_gated(url):
+                if not url or is_gated(url) or _is_serp(url) or _is_video_page(url):
                     continue
                 tried.append(url)
                 try:
@@ -108,7 +165,12 @@ class RepostResolver:
                 except (FetchError, FetchBlocked) as exc:
                     self.log.debug("repost candidate %s failed: %s", url, exc)
                     continue
-                if page.blocked or not page.text or len(page.text) < 200:
+                if page.blocked or not page.text or len(page.text) < _MIN_REPOST_CHARS:
+                    continue
+                if _is_serp(page.final_url) or _is_video_page(page.final_url):
+                    continue
+                if not _is_same_story(title, page.title or "", page.text):
+                    self.log.debug("repost candidate %s is a different story", url)
                     continue
 
                 produced += 1
@@ -160,7 +222,7 @@ class RepostResolver:
                 gaps.append({
                     "source_id": original.source_id,
                     "title": title,
-                    "reason": "no readable repost found",
+                    "reason": "no readable repost carrying the same story",
                     "candidates_tried": tried,
                 })
             else:
