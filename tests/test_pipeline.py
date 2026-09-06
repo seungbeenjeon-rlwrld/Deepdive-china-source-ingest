@@ -59,7 +59,8 @@ class Harness:
         self.config.search_sweep = {**self.config.search_sweep, "provider": None}
         self.config.research = {
             **self.config.research,
-            "derive_channels": {"enabled": True, "probe_official_site": False},
+            "derive_channels": {"enabled": True, "probe_official_site": False,
+                                "probe_filings": False},
             "retrieval_injection": {
                 **(self.config.research.get("retrieval_injection") or {}),
                 "enabled": False,
@@ -1535,7 +1536,7 @@ class TestOnlyCompanyNameIsAsked(unittest.TestCase):
             "  stage1_prompt: ./prompts/prompt1_entity_discovery.md\n"
             "  stage2_prompt: ./prompts/prompt2_source_collection.md\n"
             "  retrieval_injection: {enabled: false, provider: null}\n"
-            "  derive_channels: {enabled: true, probe_official_site: false}\n"
+            "  derive_channels: {enabled: true, probe_official_site: false, probe_filings: false}\n"
             "search_sweep: {enabled: false, provider: null}\n"
             "repost_resolution: {enabled: false}\n"
             "official_site: {enabled: false, index_url: null}\n"
@@ -1574,11 +1575,16 @@ class TestOnlyCompanyNameIsAsked(unittest.TestCase):
         self.assertNotIn("입력하세요", out)
 
 
-def _derivation_harness():
-    """Harness with channel derivation on and the network probe off."""
+def _derivation_harness(*, probe_filings: bool = False):
+    """Harness with channel derivation on and the network probes off.
+
+    ``probe_filings`` is opt-in so a caller that wants to exercise the probe can
+    stub ``_has_filings``; left off, nothing here touches the network.
+    """
     h = Harness(MockProvider())
     h.config.research = {**h.config.research,
                          "derive_channels": {"enabled": True,
+                                             "probe_filings": probe_filings,
                                              "probe_official_site": False}}
     return h
 
@@ -1605,6 +1611,32 @@ class TestChannelDerivation(unittest.TestCase):
             d = h.pipeline.derive_channels(self.NAMES, "")
             # A 合伙企业 is a holding vehicle, not the entity that files patents.
             self.assertEqual(d["patent_assignee"], "上海智元新创技术有限公司")
+        finally:
+            h.cleanup()
+
+    def test_probe_prefers_a_stage_0_name_the_registry_confirms(self):
+        # The Unitree failure: the regex pulled 户集中度 out of "客户集中度",
+        # while the right key (宇树科技) was already sitting in stage 0.
+        h = _derivation_harness(probe_filings=True)
+        try:
+            h.pipeline._has_filings = lambda k: k == "宇树科技"
+            d = h.pipeline.derive_channels(
+                {"search_names": ["宇树科技", "杭州宇树科技有限公司"]},
+                "客户集中度较高，科创板代码 688836。",
+            )
+            self.assertEqual(d["filings_search_key"], "宇树科技")
+            self.assertIn("巨潮资讯网", d["evidence"]["filings_search_key"])
+        finally:
+            h.cleanup()
+
+    def test_probe_leaves_the_key_unset_when_nothing_is_listed(self):
+        h = _derivation_harness(probe_filings=True)
+        try:
+            h.pipeline._has_filings = lambda k: False
+            d = h.pipeline.derive_channels(
+                {"search_names": ["智元机器人"]}, "该公司尚未上市。"
+            )
+            self.assertIsNone(d["filings_search_key"])
         finally:
             h.cleanup()
 
@@ -2171,7 +2203,7 @@ class TestStage2OverwriteGuard(unittest.TestCase):
             "  stage1_prompt: ./prompts/prompt1_entity_discovery.md\n"
             "  stage2_prompt: ./prompts/prompt2_source_collection.md\n"
             "  retrieval_injection: {enabled: false, provider: null}\n"
-            "  derive_channels: {enabled: true, probe_official_site: false}\n"
+            "  derive_channels: {enabled: true, probe_official_site: false, probe_filings: false}\n"
             "search_sweep: {enabled: false, provider: null}\n"
             "repost_resolution: {enabled: false}\n"
             "official_site: {enabled: false, index_url: null}\n"

@@ -580,6 +580,7 @@ class Pipeline:
         """
         derived: dict[str, Any] = {"patent_assignee": None, "filings_search_key": None,
                                    "official_site": None, "evidence": {}}
+        cfg = self.config.research.get("derive_channels") or {}
 
         # 1) Patent assignee: the registered legal entity, not the brand.
         legal = [
@@ -598,18 +599,39 @@ class Pipeline:
                 f"stage 0 legal_entity, confidence={chosen[0].get('confidence')}"
             )
 
-        # 2) Listed entity: a mainland stock code names the company right before it.
+        # 2) Listed entity. Scraping a name out of prose kept producing sentence
+        # fragments — 创板代码 from "科创板代码：688836", 户集中度 from
+        # "客户集中度". Chinese has no word boundaries, so the reliable move is to
+        # stop guessing and ask the registry: try each candidate name and keep
+        # whichever actually returns filings. The queries are free.
+        candidates: list[tuple[str, str]] = []
+        for name in (names_meta.get("search_names") or [])[:3]:
+            if name and any("\u4e00" <= c <= "\u9fff" for c in name):
+                candidates.append((name, "stage 0 name"))
         listed = _find_listed_entity(stage1_text)
         if listed:
-            derived["filings_search_key"] = listed["name"]
-            derived["evidence"]["filings_search_key"] = (
-                f"stage 1 mentions {listed['code']} next to {listed['name']!r}"
+            candidates.append(
+                (listed["name"], f"stage 1 mentions {listed['code']} next to it")
             )
+
+        probe = bool(cfg.get("probe_filings", True))
+        for name, why in candidates:
+            if probe:
+                if not self._has_filings(name):
+                    continue
+                why += "; confirmed on 巨潮资讯网"
+            elif name != (listed or {}).get("name"):
+                # Without a probe there is nothing to separate a real short name
+                # from a sentence fragment, so only the stock-code anchor is
+                # trustworthy enough to use unverified.
+                continue
+            derived["filings_search_key"] = name
+            derived["evidence"]["filings_search_key"] = why
+            break
 
         # 3) Newsroom index: find the official domain, then its news listing.
         # This one needs a network probe, so it is separately switchable — tests
         # and offline runs must not reach out.
-        cfg = self.config.research.get("derive_channels") or {}
         site = (
             self._find_newsroom(stage1_text, names_meta)
             if cfg.get("probe_official_site", True)
@@ -620,6 +642,25 @@ class Pipeline:
             derived["evidence"]["official_site"] = site["why"]
 
         return derived
+
+    def _has_filings(self, search_key: str) -> bool:
+        """Does 巨潮资讯网 actually hold filings under this name?
+
+        One cheap query beats any amount of regex guesswork about which token in
+        a Chinese sentence is a company name.
+        """
+        from .collectors import ExchangeFilingCollector
+
+        try:
+            records, _ = ExchangeFilingCollector(self._get_fetcher()).collect(
+                self.metadata.target_company, search_key, max_records=1
+            )
+        except Exception as exc:
+            self.log.debug("filings probe failed for %r: %s", search_key, exc)
+            return False
+        if records:
+            self.log.info("filings found under %r", search_key)
+        return bool(records)
 
     def _find_newsroom(
         self, stage1_text: str, names_meta: dict[str, Any]

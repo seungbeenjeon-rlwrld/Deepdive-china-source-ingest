@@ -34,7 +34,8 @@ DEFAULTS: dict[str, Any] = {
         # The three per-company channel inputs are derived from what stages 0-1
         # found rather than asked for. Locating the newsroom needs one network
         # probe, so it can be turned off independently.
-        "derive_channels": {"enabled": True, "probe_official_site": True},
+        "derive_channels": {"enabled": True, "probe_official_site": True,
+                            "probe_filings": True},
         # Expand the one global name the user typed into Chinese search names.
         # Without this, a Chinese index both misses the company and returns
         # same-name companies instead.
