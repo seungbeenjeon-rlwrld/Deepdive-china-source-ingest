@@ -77,7 +77,9 @@ AgiBot(智元机器人)을 대상으로 테스트한 결과:
    ↓
 ④ 추가 소스 전수 수집
    ↓
-⑤ Evidence Corpus로 저장
+⑤ 중복 제거 · 묶음 정리 · 색인 생성
+   ↓
+⑥ Evidence Corpus로 저장
    ↓
 Claude Deep Research
 ```
@@ -135,6 +137,26 @@ Stage 1에서 얻은 이름과 검색어를 기반으로 중국 웹을 본격적
 - 중국 로컬 미디어
 
 Stage 1 결과는 요약하지 않고 그대로 Stage 2에 전달함. 따라서 중간 단계에서 정보가 손실되지 않도록 설계됨.
+
+### 채널 입력값은 물어보지 않고 스스로 판단함
+
+공식 뉴스룸 주소, 상장사명, 특허 출원인 — 전수 열거에 필요한 이 세 값은 사용자가
+입력하지 않음. Stage 0·1 이 이미 알고 있는 정보이므로 파이프라인이 직접 정함.
+
+| 값 | 판단 근거 |
+| --- | --- |
+| 특허 출원인 | Stage 0 이 찾은 법인명 (지주회사·合伙企业 제외) |
+| 상장사명 | 후보 이름을 巨潮资讯网 에 실제로 조회해 공시가 나오는 것을 채택 |
+| 공식 뉴스룸 | Stage 1 이 가장 많이 인용한 공식 도메인의 뉴스 목록 페이지 |
+
+상장사명을 문장에서 정규식으로 뽑던 방식은 폐기함. 중국어에는 띄어쓰기가 없어
+`科创板代码：688836` 에서 `创板代码`, `客户集中度` 에서 `户集中度` 같은 문장 조각이
+회사명으로 잡혔기 때문임. 지금은 추측하지 않고 **등기소에 직접 조회**해서 공시가
+실제로 나오는 이름만 씀. 조회 비용은 없음.
+
+각 판단의 근거는 `metadata.json` 의 `notes` 에 함께 기록되므로, 왜 그 값이
+선택됐는지 나중에 확인할 수 있음. 원하면 플래그(`--filings` 등)로 덮어쓸 수 있고,
+그 경우 자동 판단은 생략됨.
 
 ## 4. Baidu는 어떻게 사용하는가
 
@@ -302,6 +324,7 @@ LLM 주장
 research/
 └── 智元机器人/
     └── 실행시간/
+        ├── 00_INDEX.md          ← Claude가 가장 먼저 읽는 목차
         ├── metadata.json
         ├── 00_name_resolution.md
         ├── 01_entity_discovery.md
@@ -311,7 +334,7 @@ research/
         ├── 05_reposts.md
         ├── 06_exchange_filings.md
         ├── 07_patents.md
-        ├── raw_sources/
+        ├── raw_sources/         ← 소스 1건 = 파일 1개 (.md / .json)
         └── logs/
 ```
 
@@ -324,6 +347,21 @@ research/
 **Metadata** — 어디서 가져왔는지, 원문인지 Snippet인지, 접근 실패 여부 등
 
 이 자료들을 이후 Claude가 직접 읽게 하는 구조임.
+
+### 중복 제거와 색인
+
+채널이 여러 개이므로 같은 URL을 Baidu 와 공식 사이트가 동시에 잡는 일이 흔함.
+같은 URL 을 두 번 저장하지 않되, **두 채널이 같은 자료를 찾았다는 사실 자체는
+교차 검증이므로 버리지 않음**. 병합할 때 증거 수준이 높은 쪽과 본문이 긴 쪽을
+남기고, 어느 채널들이 찾았는지는 `also_found_by` 에 기록함.
+
+제목이 거의 같은 자료(같은 발표의 재게시본 등)는 하나로 묶고 대표본을 지정함.
+묶음 안의 나머지는 `cluster_role: dup` 으로 표시되므로 Claude 가 건너뛸 수 있음.
+
+`00_INDEX.md` 는 전체 소스를 한 줄씩 나열한 목차임. Claude 가 이것만 먼저 읽고
+필요한 파일만 여는 구조라, 코퍼스 전체를 컨텍스트에 넣지 않아도 됨.
+
+실측(Unitree): 244건 → 유효 171건, 디스크 2,272KB 중 실제 본문 43KB.
 
 ## 10. Source Record의 핵심 원칙
 
@@ -488,20 +526,27 @@ python research.py
 
 
 
-스크립트로 돌릴 때는 플래그로 지정함 (이때는 묻지 않음):
+회사명 하나만 주면 나머지(중국어 이름, 뉴스룸, 상장사명, 특허 출원인)는 전부
+파이프라인이 알아서 정함.
 
 ```bash
-python research.py --company "智元机器人" --official-site "..." --filings "..."
+python research.py --company "Unitree"
 python research.py --company "X" --provider mock   # 오프라인 테스트, 키 불필요
 ```
 
-전수 열거 채널까지 사용:
+자동 판단이 틀렸을 때만 플래그로 덮어쓰면 됨:
 
 ```bash
-python research.py --company "智元机器人" \
+python research.py --company "AgiBot" \
   --official-site "https://www.agibot.com.cn/article/315" \
   --filings "上纬新材" \
   --patents "上海智元新创技术有限公司"
+```
+
+이미 끝난 실행에 수집 채널만 다시 돌릴 때:
+
+```bash
+python research.py --resume ./research/unitree/2026-09-07_005223 --stage channels
 ```
 
 ### 주요 옵션
@@ -512,16 +557,17 @@ python research.py --company "智元机器人" \
 | `--stage {1,2,all,channels}` | 실행 단계. 기본 `all`. `channels` 는 수집 채널만 실행하고 Stage 1·2 를 보존함 |
 | `--force` | 완료된 Stage 2 를 의도적으로 덮어씀 |
 | `--resume RUN_DIR` | 해당 실행의 Stage 1 결과를 재사용 |
-| `--official-site URL` | 공식 뉴스룸 전체 순회 |
-| `--filings LISTED_NAME` | 거래소 공시 전체 조회 (예: `上纬新材`) |
-| `--patents ASSIGNEE` | 특허 전체 조회 (예: `上海智元新创技术有限公司`) |
-| `--provider {tencent,zhipu,serpapi,mock}` | provider 강제 지정 |
+| `--official-site URL` | 공식 뉴스룸 전체 순회. 생략 시 자동 판단 |
+| `--filings LISTED_NAME` | 거래소 공시 전체 조회. 생략 시 자동 판단 |
+| `--patents ASSIGNEE` | 특허 전체 조회. 생략 시 자동 판단 |
+| `--provider {claude-cli,zhipu,tencent,serpapi,mock}` | provider 강제 지정 |
 | `--no-reposts` / `--no-search-sweep` | 해당 단계 생략 |
 | `--verbose` | 상세 로그 출력 |
 
 ### 회사별 설정
 
-회사마다 세 가지 값을 `config.yaml`에 넣으면 매번 플래그를 쓰지 않아도 됨.
+세 값은 기본적으로 자동 판단되므로 보통은 건드릴 필요 없음. 자동 판단을 고정하고
+싶을 때만 `config.yaml` 에 넣으면 됨.
 
 ```yaml
 official_site:
@@ -539,7 +585,7 @@ registries:
 python -m unittest discover tests -v
 ```
 
-202개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
+214개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
 
 ---
 

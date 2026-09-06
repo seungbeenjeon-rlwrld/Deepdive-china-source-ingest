@@ -46,8 +46,9 @@ BANNER = """========================================
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="research.py",
-        description="Collect Chinese local research sources for a target company "
-                    "via Tencent Hunyuan + 联网搜索API (Yuanbao search stack).",
+        description="Collect Chinese local research sources for a target company: "
+                    "Baidu search, the official newsroom, 巨潮资讯网 filings and "
+                    "CNIPA patents, saved as a graded evidence corpus.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
