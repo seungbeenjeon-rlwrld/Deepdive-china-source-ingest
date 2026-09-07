@@ -109,6 +109,20 @@ DEFAULTS: dict[str, Any] = {
         "max_section_chars": 40000,
     },
     # Second evidence channel: structured search over the queries stage 1
+    # The Baidu-only layer: Chinese domains a general web search covers poorly.
+    # One query per domain, so cost is a few SerpApi calls, not a multiple of
+    # the whole query list.
+    "local_sources": {
+        "enabled": True,
+        "domains": [
+            "ccgp.gov.cn",        # 中国政府采购网 — award notices, public
+            "tianyancha.com",     # 工商 registry — gated, snippet only
+            "qcc.com",            # 企查查 — gated, snippet only
+            "aiqicha.baidu.com",  # 爱企查 — gated, snippet only
+        ],
+        "results_per_domain": 20,
+        "max_pages_fetched": 20,
+    },
     "search_sweep": {
         "enabled": True,
         # Which provider runs the sweep. None = the main provider. Set to
@@ -163,6 +177,7 @@ class Config:
     provider: str
     output: dict[str, Any]
     research: dict[str, Any]
+    local_sources: dict[str, Any]
     search_sweep: dict[str, Any]
     fetch: dict[str, Any]
     repost_resolution: dict[str, Any]
@@ -286,6 +301,7 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
         provider=provider,
         output=data.get("output", {}),
         research=data.get("research", {}),
+        local_sources={**DEFAULTS["local_sources"], **(data.get("local_sources") or {})},
         search_sweep=data.get("search_sweep", {}),
         fetch=data.get("fetch", {}),
         repost_resolution=data.get("repost_resolution", {}),

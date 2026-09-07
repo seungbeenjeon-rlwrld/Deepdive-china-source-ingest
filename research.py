@@ -304,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
         storage.attach_run(latest)
         resume_dir = latest
 
+    names_meta: dict = {}
     filings_key = args.filings or config.registries.get("filings_search_key")
     patent_assignee = args.patents or config.registries.get("patent_assignee")
 
@@ -391,9 +392,8 @@ def main(argv: list[str] | None = None) -> int:
 
             # The three channel inputs are derivable from what stages 0-1 found,
             # so they are never asked for. Explicit flags still win.
-            derived = pipeline.derive_channels(
-                result.parsed.get("name_resolution") or {}, stage1_text
-            )
+            names_meta = result.parsed.get("name_resolution") or {}
+            derived = pipeline.derive_channels(names_meta, stage1_text)
             for key, current, label in (
                 ("filings_search_key", filings_key, "거래소 공시"),
                 ("patent_assignee", patent_assignee, "특허 출원인"),
@@ -512,6 +512,19 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             log.warning("%s stage failed: %s", label, exc)
             say(f"  {label} failed ({exc}) — earlier results unaffected")
+
+    # ---- the Baidu-only layer ------------------------------------------
+    # Chinese domains a general web search covers poorly: the government
+    # procurement portal and the 工商 registries.
+    if exit_code == 0 and config.local_sources.get("enabled", True):
+        try:
+            say()
+            pipeline.run_local_sources(company, names_meta)
+        except Exception as exc:
+            metadata.local_sources_status = "failed"
+            storage.write_metadata(metadata)
+            log.warning("local domain search failed: %s", exc)
+            say(f"  local domain search failed ({exc}) — earlier results unaffected")
 
     # ---- repost resolution ---------------------------------------------
     if exit_code == 0 and config.repost_resolution.get("enabled", True):

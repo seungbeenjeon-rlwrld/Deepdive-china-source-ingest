@@ -96,6 +96,31 @@ registries:
 # Second evidence channel: structured search over the queries stage 1
 # recommended. SearchPro on Tencent, /web_search on Z.ai. Both honour
 # site_filters, so mp.weixin.qq.com works either way.
+# The Baidu-only layer. This is where the "sources a general web search misses"
+# claim actually holds: one query per domain against the Baidu index, aimed at
+# Chinese sites Google covers poorly.
+#
+# Measured on Unitree — `site:ccgp.gov.cn 宇树` returns 19 award notices with
+# amounts (799.2万元 at 中国科学技术馆, 3,140,000元 at 沈阳建筑大学, a six-party
+# consortium at 国家市场监督管理总局) where a web search surfaced 3-4 large deals.
+# `site:tianyancha.com` reported 371 tender participations, 9 court cases and
+# 10 outbound investments; `site:aiqicha.baidu.com` named 河南宇树科技 and
+# 宇树科技(宁波), subsidiaries absent from everything else in the corpus.
+#
+# ccgp.gov.cn disallows automated fetching in robots.txt, which is honoured, so
+# procurement evidence is the indexed title and snippet — and those snippets
+# carry the award tables. The registries are login-walled and listed in
+# GATED_HOSTS, so their pages are never requested either.
+local_sources:
+  enabled: true
+  domains:
+    - ccgp.gov.cn         # 中国政府采购网 — award notices
+    - tianyancha.com      # 天眼查 — 工商 registry
+    - qcc.com             # 企查查 — 工商 registry
+    - aiqicha.baidu.com   # 爱企查 — 工商 registry
+  results_per_domain: 20
+  max_pages_fetched: 20
+
 search_sweep:
   enabled: true
   # Baidu, via SerpApi. Its job is grounding, not exclusivity: injected results

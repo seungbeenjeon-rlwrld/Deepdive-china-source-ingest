@@ -346,6 +346,10 @@ def build_provider(name: str, config: Any) -> ResearchProvider:
     """Instantiate a provider by name. Imports are local to avoid cycles."""
     key = (name or "").strip().lower()
 
+    if key in ("claude-cli", "claude_cli", "cli"):
+        from .claude_cli_client import ClaudeCliProvider
+
+        return ClaudeCliProvider(config.claude_cli)
     if key == "serpapi":
         from .serpapi_client import SerpApiBaiduProvider
 

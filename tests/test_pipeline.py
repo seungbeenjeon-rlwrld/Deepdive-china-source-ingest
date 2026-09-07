@@ -638,6 +638,57 @@ class TestFilingDraftPreference(unittest.TestCase):
         self.assertEqual(attempted, ["宇树科技首次公开发行股票并在科创板上市招股意向书"])
 
 
+class TestEveryAdvertisedProviderBuilds(unittest.TestCase):
+    """The provider list and the dispatch must not drift apart.
+
+    Removing the unused adapters took the claude-cli branch with them, so the
+    default provider raised "Unknown provider 'claude-cli'" — caught only by a
+    live run. Every name the CLI accepts is checked here instead.
+    """
+
+    def test_all_cli_choices_are_dispatchable(self):
+        import research
+        from src.config import load_config
+        from src.provider import AuthError, ProviderError, build_provider
+
+        choices = [
+            action.choices
+            for action in research.build_parser()._actions
+            if action.dest == "provider"
+        ][0]
+        self.assertIn("claude-cli", choices)
+
+        config = load_config()
+        for name in choices:
+            try:
+                provider = build_provider(name, config)
+            except AuthError:
+                # A missing credential is a different failure from a missing
+                # branch, and it is the correct one for a keyless environment.
+                continue
+            except ProviderError as exc:
+                self.fail(f"{name} is offered by the CLI but will not build: {exc}")
+            else:
+                self.assertTrue(provider.name)
+
+    def test_config_accepts_exactly_the_cli_choices(self):
+        """config.yaml's validation list must match the CLI's."""
+        import re
+
+        import research
+
+        choices = set([
+            action.choices
+            for action in research.build_parser()._actions
+            if action.dest == "provider"
+        ][0])
+        source = (PROJECT_ROOT / "src" / "config.py").read_text(encoding="utf-8")
+        match = re.search(r'if provider not in \(([^)]*)\):', source)
+        self.assertIsNotNone(match, "provider validation list not found")
+        allowed = set(re.findall(r'"([^"]+)"', match.group(1)))
+        self.assertEqual(allowed, choices)
+
+
 class TestSearchKeyIsRequired(unittest.TestCase):
     """A missing SerpApi key must stop the run, not quietly degrade it."""
 

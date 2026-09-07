@@ -251,6 +251,7 @@ class RunMetadata:
     stage1_status: str = "pending"  # pending|running|completed|failed|skipped|loaded_from_disk
     stage2_status: str = "pending"
     search_sweep_status: str = "pending"
+    local_sources_status: str = "pending"
     repost_status: str = "pending"
     filings_status: str = "pending"
     patents_status: str = "pending"

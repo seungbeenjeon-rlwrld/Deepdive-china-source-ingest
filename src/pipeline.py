@@ -65,6 +65,7 @@ from .storage import (
     md_document,
 )
 INDEX_MD = "00_INDEX.md"
+LOCAL_JSON, LOCAL_MD = "08_local_sources.json", "08_local_sources.md"
 
 # Statuses that mean "we never got the article body".
 _NO_BODY_STATUSES = ("URL_ONLY", "SEARCH_SNIPPET_ONLY")
@@ -220,6 +221,165 @@ class Pipeline:
             INDEX_MD, index_markdown(self.metadata.target_company, self._saved)
         )
         self.metadata.counts["indexed_sources"] = len(self._saved)
+
+    # -- the Baidu-only layer ----------------------------------------------
+    def run_local_sources(
+        self, company: str, names_meta: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Search named Chinese domains that a general web search misses.
+
+        The general sweep is grounding, not discovery: measured against Claude
+        web search on Unitree across product specs, ownership, procurement,
+        patents and supply chain, every angle came back covered there, usually
+        in more detail. What was NOT covered sits on specific Chinese
+        domains — the government procurement portal and the 工商 registries —
+        and Baidu indexes them where a general search effectively does not.
+
+        Measured: `site:ccgp.gov.cn 宇树` returns 19 award notices, most of
+        them never reported anywhere, against 3-4 large deals a web search
+        surfaces. `site:tianyancha.com 宇树科技` surfaces shareholder,
+        management and enforcement pages, and named 宇树科技(宁波)有限责任公司,
+        a subsidiary absent from the rest of the corpus.
+
+        One query per domain, so the cost is a handful of SerpApi calls rather
+        than a multiple of the whole query list. The registry hosts are gated,
+        so their pages are never fetched — the indexed title and snippet are
+        the evidence, and they are labelled as such.
+        """
+        cfg = self.config.local_sources
+        if not cfg.get("enabled", True):
+            self.metadata.local_sources_status = "disabled"
+            return {"skipped": "disabled in config"}
+
+        domains = [d for d in (cfg.get("domains") or []) if d]
+        if not domains:
+            self.metadata.local_sources_status = "skipped"
+            return {"skipped": "no domains configured"}
+
+        searcher = self._retrieval_provider()
+        if not searcher.supports_search:
+            self.metadata.local_sources_status = "unsupported"
+            return {"skipped": f"search provider {searcher.name} has no search"}
+
+        # The registry name, not the English brand: these domains are indexed
+        # in Chinese, so an English query returns nothing useful.
+        name = self._best_chinese_name(names_meta) or company
+        self._progress(f"[+] Searching {len(domains)} Chinese local domains for {name}...")
+        self.metadata.local_sources_status = "running"
+        self.storage.write_metadata(self.metadata)
+
+        per_domain = int(cfg.get("results_per_domain", 20))
+        records: list[SourceRecord] = []
+        failures: list[dict[str, Any]] = []
+        raw: list[dict[str, Any]] = []
+        by_domain: dict[str, int] = {}
+
+        for domain in domains:
+            query = f"site:{domain} {name}"
+            try:
+                result = searcher.search(query, count=per_domain)
+            except Exception as exc:
+                failures.append({"domain": domain, "query": query, "error": str(exc)})
+                self._progress(f"      {domain}: failed ({exc})")
+                continue
+            if result.get("raw"):
+                raw.append({"domain": domain, "query": query, "response": result["raw"]})
+
+            found = 0
+            for page in result.get("pages") or []:
+                record = _record_from_page(page, company, query=query, site=domain)
+                record.origin = "local_domain_search"
+                record.extra = {**record.extra, "local_domain": domain}
+                records.append(record)
+                found += 1
+            by_domain[domain] = found
+            self._progress(f"      {domain}: {found}")
+
+        # Public pages get their bodies read; gated registries never do.
+        fetched = self._fetch_local_bodies(records, cfg)
+
+        payload = {
+            "target_company": company,
+            "search_name": name,
+            "domains": domains,
+            "results_by_domain": by_domain,
+            "results_total": len(records),
+            "bodies_fetched": fetched,
+            "failures": failures,
+            "sources": [r.to_dict() for r in records],
+            "generated_at": utc_now_iso(),
+            "note": (
+                "Chinese domains a general web search covers poorly, searched one "
+                "query each through the Baidu index. Registry hosts (天眼查, 企查查, "
+                "爱企查 …) are gated: their pages are never fetched, so the indexed "
+                "title and snippet are the evidence and are labelled "
+                "SEARCH_SNIPPET_ONLY. Procurement notices on ccgp.gov.cn are public "
+                "and have their text preserved."
+            ),
+        }
+        if self.config.output.get("save_json", True):
+            self.storage.save_json(LOCAL_JSON, payload)
+        if self.config.output.get("save_markdown", True):
+            self.storage.save(LOCAL_MD, _records_markdown(
+                f"Stage 8 — Chinese Local Domains: {name}", payload, records))
+        if raw and self.config.output.get("save_raw_responses", True):
+            self.storage.save_json("raw_local_sources_responses.json", raw)
+        self._persist_records(records)
+
+        self.metadata.local_sources_status = (
+            "completed" if not failures else "completed_with_errors"
+        )
+        self.metadata.counts["local_domain_results"] = len(records)
+        self.metadata.counts["local_domain_bodies"] = fetched
+        self.storage.write_metadata(self.metadata)
+        self._progress(
+            f"✓ {len(records)} results from Chinese local domains "
+            f"({fetched} read in full)"
+        )
+        return payload
+
+    def _best_chinese_name(self, names_meta: dict[str, Any]) -> Optional[str]:
+        """The shortest Chinese search name — the one indexes actually key on.
+
+        Verified against 巨潮资讯网: 宇树科技 returns 19 filings while the full
+        legal name 杭州宇树科技有限公司 returns none.
+        """
+        candidates = [
+            n for n in (names_meta.get("search_names") or [])
+            if n and any("\u4e00" <= c <= "\u9fff" for c in n)
+        ]
+        return candidates[0] if candidates else None
+
+    def _fetch_local_bodies(
+        self, records: list[SourceRecord], cfg: dict[str, Any]
+    ) -> int:
+        """Read the public pages. Gated hosts keep their snippet."""
+        limit = int(cfg.get("max_pages_fetched", 20))
+        if limit <= 0:
+            return 0
+        fetcher = self._get_fetcher()
+        fetched = 0
+        for record in records:
+            if fetched >= limit:
+                break
+            url = record.retrieval_url or ""
+            if not url or is_gated(url):
+                continue
+            try:
+                page = fetcher.fetch(url)
+            except (FetchError, FetchBlocked) as exc:
+                record.extra = {**record.extra, "fetch_error": str(exc)}
+                continue
+            if page.blocked or not page.text or len(page.text) < 200:
+                record.extra = {**record.extra, "fetch_error": "no usable body"}
+                continue
+            record.content = page.text
+            record.canonical_url = page.final_url
+            record.content_access_status = "VERBATIM_FULL_TEXT"
+            record.reaccess_status = "VERIFIED_REOPENABLE"
+            record.derived = {**(record.derived or {}), "content_chars": len(page.text)}
+            fetched += 1
+        return fetched
 
     # -- primary-source registries (prompt 2 §10 priorities 1 and 5) --------
     def run_exchange_filings(self, company: str, search_key: str) -> dict[str, Any]:

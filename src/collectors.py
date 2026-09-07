@@ -34,7 +34,16 @@ from .utils import get_logger
 
 # Hosts we must not try to fetch bodies from: they gate automated access, and
 # working around that gate is out of bounds.
-GATED_HOSTS = ("mp.weixin.qq.com", "weixin.sogou.com", "channels.weixin.qq.com")
+# Hosts that answer an automated request with a login wall or a verification
+# page. Never fetched — the search snippet is kept and labelled as a snippet.
+# The 工商 registries are here because Baidu indexes their pages (so the titles
+# alone reveal entity names, shareholders, litigation) while the pages
+# themselves require an account.
+GATED_HOSTS = (
+    "mp.weixin.qq.com", "weixin.sogou.com", "channels.weixin.qq.com",
+    "tianyancha.com", "qcc.com", "qichacha.com", "aiqicha.baidu.com",
+    "qixin.com", "shuidi.cn",
+)
 
 
 def is_gated(url: Optional[str]) -> bool:
