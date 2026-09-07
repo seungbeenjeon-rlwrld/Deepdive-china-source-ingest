@@ -544,16 +544,19 @@ SERPAPI_KEY_3=키3
 > SerpApi 약관과 충돌할 수 있으므로 확인이 필요함. 로테이션 기능 자체는
 > 팀원별 키를 함께 쓰는 용도로도 동작함.
 
-### 프롬프트 실행 — 아래 중 하나
+### 프롬프트 실행 — Claude Code CLI
 
-| provider | 준비 | 특징 |
-| --- | --- | --- |
-| **`claude-cli`** (기본) | `curl -fsSL https://claude.ai/install.sh \| bash` | **API 키 불필요.** 대화형 Claude Code와 사용량 한도를 공유함 |
-| `zhipu` | `ZHIPU_API_KEY` — [z.ai](https://z.ai/manage-apikey/apikey-list) | 별도 한도, 무료 모델 있음. 혼잡 시 `429` 재시도 필요 |
-| `tencent` | `TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY` | 위챗 커버리지 최상이나 **중국 신분증·법인 필요**. 미검증 |
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+claude          # 최초 1회 로그인
+```
 
-기본값은 `claude-cli` 임. 발급받을 키가 SerpApi 하나로 줄고, 딥다이브 단계에서
-어차피 Claude Code가 필요하므로 도구가 하나로 통일됨.
+**API 키 불필요.** CLI 가 자체 인증을 들고 있음. 대화형 Claude Code 와 사용량
+한도를 공유하므로 긴 실행은 본인 작업을 느리게 할 수 있음.
+
+Zhipu 와 Tencent 어댑터는 제거함. Zhipu 는 검색이 유료 애드온이라 무료 계정에서
+막혔고, Tencent 는 중국 신분증이 필요해 애초에 검증이 불가능했음. 미검증 코드
+776줄을 "교체 가능성"으로 남겨두는 편이 더 위험하다고 판단함.
 
 ### 실행
 
@@ -597,7 +600,7 @@ python research.py --resume ./research/unitree/2026-09-07_005223 --stage channel
 | `--resume RUN_DIR` | 해당 실행의 Stage 1 결과를 재사용 |
 | `--filings LISTED_NAME` | 거래소 공시 전체 조회. 생략 시 자동 판단 |
 | `--patents ASSIGNEE` | 특허 전체 조회. 생략 시 자동 판단 |
-| `--provider {claude-cli,zhipu,tencent,serpapi,mock}` | provider 강제 지정 |
+| `--provider {claude-cli,serpapi,mock}` | provider 강제 지정. `mock` 은 완전 오프라인 |
 | `--no-reposts` / `--no-search-sweep` | 해당 단계 생략 |
 | `--verbose` | 상세 로그 출력 |
 
@@ -620,7 +623,7 @@ registries:
 python -m unittest discover tests -v
 ```
 
-232개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
+209개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
 
 ---
 

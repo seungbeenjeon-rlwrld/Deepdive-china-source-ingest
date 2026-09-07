@@ -1,17 +1,11 @@
-# HTTP client. Used directly by the Z.ai provider, and a dependency of the
-# Tencent SDK.
+# HTTP client. Used by the SerpApi client and the registry collectors.
 requests>=2.32.0
-
-# Official Tencent Cloud SDK — provides TC3-HMAC-SHA256 request signing and the
-# generic call_json transport used for both Hunyuan ChatCompletions and
-# 联网搜索API SearchPro. Only needed for provider: tencent.
-tencentcloud-sdk-python-common>=3.1.160
 
 # Reads config.yaml. If absent, the tool falls back to built-in defaults.
 PyYAML>=6.0
 
-# HTML parsing for article-body extraction (official newsroom crawl and repost
-# resolution). No JS execution and no browser automation.
+# HTML parsing for article-body extraction (repost resolution). No JS
+# execution and no browser automation.
 beautifulsoup4>=4.12.0
 
 # Reads the text out of exchange-filing PDFs. Without it the registry channel

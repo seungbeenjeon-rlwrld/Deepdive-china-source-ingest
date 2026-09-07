@@ -1,5 +1,5 @@
 # Behaviour lives here; credentials live in .env (never commit .env).
-provider: claude-cli       # claude-cli | zhipu | tencent | mock
+provider: claude-cli
 
 output:
   root_dir: ./research
@@ -46,20 +46,6 @@ research:
     max_results: 60
     chars_per_result: 220
 
-tencent:
-  # Hunyuan ChatCompletions. Do NOT use hunyuan-lite: it has no
-  # search-enhancement capability, so the research prompts cannot run.
-  model: hunyuan-turbos-latest
-  region: ap-guangzhou
-  temperature: 0.4
-  timeout_seconds: 900
-  enable_enhancement: true         # EnableEnhancement — turns on AI search
-  force_search_enhancement: true   # ForceSearchEnhancement
-  citation: true                   # Citation — inline citation markers
-  search_info: true                # SearchInfo — return structured citations
-  enable_multimedia: true          # EnableMultimedia — video/视频号 results
-  enable_speed_search: false       # keep false: depth matters more than latency
-
 # Claude Code CLI as the LLM. No API key needed — uses the CLI's own
 # authentication. Requires `claude` on PATH:
 #   curl -fsSL https://claude.ai/install.sh | bash
@@ -73,26 +59,6 @@ claude_cli:
   timeout_seconds: 900
   disallowed_tools: "WebSearch,WebFetch"   # retrieval is injected; keep runs reproducible
   extra_args: []
-
-# Z.ai (Zhipu) — international platform, email signup + Bearer API key.
-# Use this when a China-site Tencent Cloud account is not available.
-zhipu:
-  model: glm-4.7-flash        # free model; glm-5.3 is the strongest
-  # The built-in web_search tool is a PAID add-on ($0.01/use) and is refused on
-  # a zero-balance account. Leave false and let research.retrieval_injection
-  # supply Baidu results instead.
-  use_builtin_search: false
-  base_url: https://api.z.ai/api/paas/v4
-  temperature: 0.4
-  timeout_seconds: 900
-  max_tokens: 32768
-  thinking: false             # true = enable GLM chain-of-thought
-  search_engine: search_pro_jina   # engine for the chat web_search tool
-  search_api_engine: search-prime  # engine for the standalone /web_search
-  content_size: high          # medium | high — high returns longer summaries
-  require_search: true        # force the model to actually search
-  search_count: 20
-  search_recency: null        # null | oneDay | oneWeek | oneMonth | oneYear
 
 # Polite HTTP fetching for article bodies. Identifies itself, rate-limits and
 # honours robots.txt. Never aimed at hosts that gate automated access (WeChat
@@ -132,14 +98,21 @@ registries:
 # site_filters, so mp.weixin.qq.com works either way.
 search_sweep:
   enabled: true
-  # Which provider runs the sweep. null = the main provider above.
-  # Set to `serpapi` to sweep the BAIDU index while stages 1-2 run on a chat
-  # provider. Measured on AgiBot: 4 Baidu queries returned 49 domains, 39 of
-  # them (79%) absent from a Claude-web-search corpus for the same company —
-  # including ccgp.gov.cn (政府采购), 爱企查/天眼查, Baidu B2B, 雪球/股吧 and
-  # regional government sites.
+  # Baidu, via SerpApi. Its job is grounding, not exclusivity: injected results
+  # are what let stage 0 resolve an English name into the Chinese registry name
+  # the filings and patent channels then search on.
+  #
+  # It is not a source of facts nobody else has. Measured against Claude web
+  # search on Unitree across five angles — product specs, ownership structure,
+  # government procurement, patents, supply chain — every one came back covered
+  # there, usually in more detail. The often-quoted "79% of domains absent from
+  # a Claude-search corpus" is real but is domain diversity, not information
+  # diversity: those domains were largely the same product launches reposted.
+  #
+  # So the sweep is deliberately narrow. Each query costs one SerpApi call per
+  # site filter, and the free tier is 250/month.
   provider: serpapi
-  max_queries: 12
+  max_queries: 6
   results_per_query: 20
   mode: 2                # 0 = web results, 1 = VR cards, 2 = mixed
   freshness: null        # e.g. y2 = last two years, m3 = last three months

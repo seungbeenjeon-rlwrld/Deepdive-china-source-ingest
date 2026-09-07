@@ -30,7 +30,6 @@ from src.storage import (
     STAGE2_MD,
     md_document,
 )
-from src.tencent_client import parse_pages
 from src.utils import slugify, utc_now_iso
 
 
@@ -347,60 +346,6 @@ class TestStorage(unittest.TestCase):
         self.assertIn(body.rstrip(), doc)
 
 
-class TestTencentResponseHandling(unittest.TestCase):
-    def test_pages_json_strings_are_parsed(self):
-        pages = parse_pages({"Response": {"Pages": ['{"title":"甲","url":"u"}']}})
-        self.assertEqual(pages[0]["title"], "甲")
-
-    def test_unparsable_page_is_kept_not_dropped(self):
-        pages = parse_pages({"Response": {"Pages": ["<<broken>>"]}})
-        self.assertEqual(pages[0]["_unparsed"], "<<broken>>")
-
-    def test_missing_pages_is_empty(self):
-        self.assertEqual(parse_pages({"Response": {}}), [])
-
-    def test_empty_choices_raise_empty_response_error(self):
-        from src.config import TencentSettings
-        from src.provider import EmptyResponseError
-        from src.tencent_client import TencentProvider
-
-        provider = TencentProvider.__new__(TencentProvider)
-        provider.settings = TencentSettings(secret_id="x", secret_key="y")
-        provider.log = __import__("logging").getLogger("test")
-        provider.client = type("C", (), {"chat_completions": lambda self, p: {
-            "Response": {"Choices": [], "RequestId": "r1"}}})()
-        with self.assertRaises(EmptyResponseError):
-            provider.run_research("p", label="stage1")
-
-    def test_sensitive_finish_reason_is_explained(self):
-        from src.config import TencentSettings
-        from src.provider import EmptyResponseError
-        from src.tencent_client import TencentProvider
-
-        provider = TencentProvider.__new__(TencentProvider)
-        provider.settings = TencentSettings(secret_id="x", secret_key="y")
-        provider.log = __import__("logging").getLogger("test")
-        provider.client = type("C", (), {"chat_completions": lambda self, p: {
-            "Response": {"Choices": [{"Message": {"Content": ""},
-                                      "FinishReason": "sensitive"}], "RequestId": "r1"}}})()
-        with self.assertRaises(EmptyResponseError) as ctx:
-            provider.run_research("p", label="stage1")
-        self.assertIn("sensitive", str(ctx.exception))
-
-    def test_malformed_envelope_is_rejected(self):
-        from src.config import TencentSettings
-        from src.provider import MalformedResponseError
-        from src.tencent_client import TencentClient
-
-        client = TencentClient.__new__(TencentClient)
-        client.settings = TencentSettings(secret_id="x", secret_key="y")
-        client.log = __import__("logging").getLogger("test")
-        client._sdk_exception = RuntimeError
-        fake = type("C", (), {"call_json": lambda self, a, p: {"NotResponse": 1}})()
-        with self.assertRaises(MalformedResponseError):
-            client._call(fake, "ChatCompletions", {})
-
-
 class TestPromptFiles(unittest.TestCase):
     def test_prompt_files_exist_and_are_utf8(self):
         for stage in (1, 2):
@@ -485,7 +430,7 @@ class TestProviderRegistry(unittest.TestCase):
 
         with self.assertRaises(ProviderError) as ctx:
             build_provider("openai", None)
-        self.assertIn("tencent", ctx.exception.hint)
+        self.assertIn("claude-cli", ctx.exception.hint)
 
     def test_bad_provider_in_config_is_rejected(self):
         from src.config import load_config
@@ -499,186 +444,6 @@ class TestProviderRegistry(unittest.TestCase):
             path = Path(tf.mkdtemp()) / "config.yaml"
             path.write_text("provider: nope\n", encoding="utf-8")
             load_config(path, project_root=PROJECT_ROOT)
-
-
-class TestZhipuProvider(unittest.TestCase):
-    def setUp(self):
-        from src.config import ZhipuSettings
-        from src.zhipu_client import ZhipuProvider
-
-        self.settings = ZhipuSettings(api_key="test-key")
-        self.provider = ZhipuProvider.__new__(ZhipuProvider)
-        self.provider.settings = self.settings
-        self.provider.log = __import__("logging").getLogger("test")
-
-    def _stub(self, body):
-        self.provider.client = type("C", (), {
-            "chat_completions": lambda _self, p: body,
-            "web_search": lambda _self, q, **kw: body,
-        })()
-
-    def test_missing_api_key_raises_auth_error(self):
-        from src.config import ZhipuSettings
-        from src.provider import AuthError
-        from src.zhipu_client import ZhipuClient
-
-        with self.assertRaises(AuthError) as ctx:
-            ZhipuClient(ZhipuSettings(api_key=None))
-        self.assertIn("z.ai", ctx.exception.hint)
-
-    def test_response_parsed_into_text_and_citations(self):
-        self._stub({
-            "id": "req-1",
-            "model": "glm-4.7-flash",
-            "choices": [{"message": {"role": "assistant", "content": "研究结果"},
-                         "finish_reason": "stop"}],
-            "web_search": [{
-                "title": "公众号文章", "link": "https://mp.weixin.qq.com/s/abc",
-                "content": "峰值功率12kW", "media": "官方公众号",
-                "publish_date": "2026-01-15", "refer": 1,
-            }],
-            "usage": {"total_tokens": 100},
-        })
-        result = self.provider.run_research("p", label="stage1")
-        self.assertEqual(result.text, "研究结果")
-        self.assertEqual(result.request_id, "req-1")
-        self.assertEqual(len(result.search_results), 1)
-        item = result.search_results[0]
-        self.assertEqual(item["url"], "https://mp.weixin.qq.com/s/abc")
-        self.assertEqual(item["site"], "官方公众号")
-        self.assertEqual(item["content"], "峰值功率12kW")
-        self.assertEqual(item["publication_date"], "2026-01-15")
-        self.assertFalse(result.warnings)
-
-    def test_no_search_results_warns_only_when_builtin_search_is_on(self):
-        self._stub({
-            "id": "r", "choices": [{"message": {"content": "answer"},
-                                    "finish_reason": "stop"}],
-        })
-        self.provider.settings.use_builtin_search = True
-        result = self.provider.run_research("p", label="stage1")
-        self.assertTrue(any("no search results" in w for w in result.warnings))
-
-    def test_no_warning_when_retrieval_is_injected_instead(self):
-        """With the paid tool off, an empty search list is expected, not a problem."""
-        self._stub({
-            "id": "r", "choices": [{"message": {"content": "answer"},
-                                    "finish_reason": "stop"}],
-        })
-        self.provider.settings.use_builtin_search = False
-        result = self.provider.run_research("p", label="stage1")
-        self.assertFalse(any("no search results" in w for w in result.warnings))
-
-    def test_paid_tool_is_not_sent_by_default(self):
-        from src.config import ZhipuSettings
-        from src.zhipu_client import ZhipuClient
-
-        captured = {}
-        client = ZhipuClient.__new__(ZhipuClient)
-        client.settings = ZhipuSettings(api_key="k", use_builtin_search=False)
-        client.log = __import__("logging").getLogger("test")
-        client._post = lambda path, payload: captured.update(payload) or {"choices": []}
-        client.chat_completions("hello")
-        self.assertNotIn("tools", captured)
-        # thinking must always be explicit, or reasoning eats the whole budget
-        self.assertEqual(captured["thinking"], {"type": "disabled"})
-
-    def test_paid_tool_is_sent_when_opted_in(self):
-        from src.config import ZhipuSettings
-        from src.zhipu_client import ZhipuClient
-
-        captured = {}
-        client = ZhipuClient.__new__(ZhipuClient)
-        client.settings = ZhipuSettings(api_key="k", use_builtin_search=True)
-        client.log = __import__("logging").getLogger("test")
-        client._post = lambda path, payload: captured.update(payload) or {"choices": []}
-        client.chat_completions("hello")
-        self.assertEqual(captured["tools"][0]["type"], "web_search")
-
-    def test_overload_codes_are_treated_as_transient(self):
-        from src.zhipu_client import OVERLOADED_CODES, ZhipuClient
-
-        for code in ("1305", "1113"):
-            self.assertIn(code, OVERLOADED_CODES)
-            fake = type("R", (), {"status_code": 429,
-                                  "json": lambda _s, c=code: {"error": {"code": c}},
-                                  "text": ""})()
-            self.assertTrue(ZhipuClient._is_transient(fake))
-
-    def test_real_auth_failure_is_not_retried(self):
-        from src.zhipu_client import ZhipuClient
-
-        fake = type("R", (), {"status_code": 401,
-                              "json": lambda _s: {"error": {"code": "1002"}},
-                              "text": ""})()
-        self.assertFalse(ZhipuClient._is_transient(fake))
-
-    def test_empty_choices_raise(self):
-        from src.provider import EmptyResponseError
-
-        self._stub({"id": "r", "choices": []})
-        with self.assertRaises(EmptyResponseError):
-            self.provider.run_research("p", label="stage1")
-
-    def test_truncation_is_flagged(self):
-        self._stub({
-            "id": "r",
-            "choices": [{"message": {"content": "cut"}, "finish_reason": "length"}],
-            "web_search": [{"title": "t", "link": "u"}],
-        })
-        result = self.provider.run_research("p", label="stage2")
-        self.assertTrue(any("cut off" in w for w in result.warnings))
-
-    def test_search_items_key_variants_all_work(self):
-        from src.zhipu_client import extract_search_items
-
-        for key in ("web_search", "search_result", "search_results", "results"):
-            self.assertEqual(
-                extract_search_items({key: [{"title": "t"}]}), [{"title": "t"}]
-            )
-        self.assertEqual(extract_search_items({"nothing": 1}), [])
-
-    def test_recency_codes_map_across_providers(self):
-        from src.zhipu_client import _map_recency
-
-        self.assertEqual(_map_recency("y2"), "oneYear")
-        self.assertEqual(_map_recency("d7"), "oneWeek")
-        self.assertEqual(_map_recency("m3"), "oneMonth")
-        self.assertEqual(_map_recency("oneDay"), "oneDay")
-        self.assertIsNone(_map_recency(None))
-        self.assertIsNone(_map_recency("nonsense"))
-
-    def test_http_errors_map_to_typed_errors(self):
-        from src.provider import AuthError, ProviderError, RateLimitError
-        from src.zhipu_client import ZhipuClient
-
-        def fake(status, payload=None):
-            return type("R", (), {
-                "status_code": status,
-                "text": json.dumps(payload or {}),
-                "json": lambda _self: payload or {},
-            })()
-
-        err = ZhipuClient._http_error(fake(401, {"error": {"message": "bad key"}}), "chat")
-        self.assertIsInstance(err, AuthError)
-        self.assertIn("bad key", str(err))
-        self.assertIsInstance(ZhipuClient._http_error(fake(429), "chat"), RateLimitError)
-        self.assertIsInstance(ZhipuClient._http_error(fake(500), "chat"), ProviderError)
-
-    def test_search_normalises_pages(self):
-        self._stub({"id": "s1", "search_result": [
-            {"title": "文章", "link": "https://mp.weixin.qq.com/s/x",
-             "content": "摘要", "media": "站点", "publish_date": "2026-02-01"},
-        ]})
-        result = self.provider.search("测试", count=10, site="mp.weixin.qq.com")
-        self.assertEqual(len(result["pages"]), 1)
-        page = result["pages"][0]
-        self.assertEqual(page["url"], "https://mp.weixin.qq.com/s/x")
-        self.assertEqual(page["content"], "摘要")
-        self.assertEqual(result["site"], "mp.weixin.qq.com")
-
-    def test_describe_states_the_wechat_limitation(self):
-        self.assertIn("搜狗", self.provider.describe()["limitation"])
 
 
 class TestWeChatUrlForms(unittest.TestCase):
@@ -1724,28 +1489,6 @@ class TestMalformedUrlSafety(unittest.TestCase):
             company="智元机器人", drop_site_operator="mp.weixin.qq.com",
         )
         self.assertEqual(kept, ["智元机器人"])
-
-
-class TestZhipuRateLimitCodes(unittest.TestCase):
-    """Three distinct 429 codes, all transient, one needing a longer wait."""
-
-    def _response(self, code):
-        return type("R", (), {"status_code": 429,
-                              "json": lambda _s: {"error": {"code": code}},
-                              "text": ""})()
-
-    def test_all_three_observed_codes_are_transient(self):
-        from src.zhipu_client import OVERLOADED_CODES, ZhipuClient
-
-        for code in ("1305", "1113", "1302"):
-            self.assertIn(code, OVERLOADED_CODES, code)
-            self.assertTrue(ZhipuClient._is_transient(self._response(code)), code)
-
-    def test_rate_limit_code_is_distinguished(self):
-        from src.zhipu_client import RATE_LIMIT_CODES
-
-        self.assertIn("1302", RATE_LIMIT_CODES)
-        self.assertNotIn("1305", RATE_LIMIT_CODES)
 
 
 class TestUnusableContentDetection(unittest.TestCase):

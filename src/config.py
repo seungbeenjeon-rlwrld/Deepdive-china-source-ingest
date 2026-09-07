@@ -14,7 +14,7 @@ from typing import Any
 from .utils import get_logger
 
 DEFAULTS: dict[str, Any] = {
-    "provider": "tencent",
+    "provider": "claude-cli",
     "output": {
         "root_dir": "./research",
         "save_markdown": True,
@@ -66,37 +66,6 @@ DEFAULTS: dict[str, Any] = {
             "chars_per_fetched_page": 3000,
         },
     },
-    "tencent": {
-        # hunyuan-lite has no search-enhancement capability; do not use it.
-        "model": "hunyuan-turbos-latest",
-        "temperature": 0.4,
-        "timeout_seconds": 900,
-        "enable_enhancement": True,
-        "force_search_enhancement": True,
-        "citation": True,
-        "search_info": True,
-        "enable_multimedia": True,
-        "enable_speed_search": False,
-    },
-    "zhipu": {
-        # Z.ai international platform. glm-4.7-flash is free; glm-5.3 is the
-        # strongest. Anything on the platform works.
-        "model": "glm-4.7-flash",
-        "base_url": "https://api.z.ai/api/paas/v4",
-        "temperature": 0.4,
-        "timeout_seconds": 900,
-        "max_tokens": 32768,
-        "thinking": False,
-        # Paid add-on ($0.01/use), refused at zero balance. Prefer injected
-        # retrieval, which is free and logs exactly what the model was given.
-        "use_builtin_search": False,
-        "search_engine": "search_pro_jina",
-        "search_api_engine": "search-prime",
-        "content_size": "high",
-        "require_search": True,
-        "search_count": 20,
-        "search_recency": None,
-    },
     # Polite HTTP fetching for article bodies. Never used against hosts that
     # gate automated access (see collectors.GATED_HOSTS).
     "fetch": {
@@ -140,13 +109,12 @@ DEFAULTS: dict[str, Any] = {
         "max_section_chars": 40000,
     },
     # Second evidence channel: structured search over the queries stage 1
-    # recommended (SearchPro on Tencent, /web_search on Z.ai).
     "search_sweep": {
         "enabled": True,
         # Which provider runs the sweep. None = the main provider. Set to
         # "serpapi" to sweep the Baidu index while stages 1-2 run elsewhere.
         "provider": None,
-        "max_queries": 12,
+        "max_queries": 6,
         "results_per_query": 20,
         "mode": 2,  # 0 web results, 1 VR cards, 2 mixed
         "freshness": None,  # e.g. "y2" for the last two years
@@ -154,49 +122,6 @@ DEFAULTS: dict[str, Any] = {
         "industries": [],  # e.g. ["gov", "acad"]
     },
 }
-
-
-@dataclass
-class TencentSettings:
-    secret_id: str | None = None
-    secret_key: str | None = None
-    region: str = "ap-guangzhou"
-    model: str = "hunyuan-turbos-latest"
-    temperature: float = 0.4
-    timeout_seconds: int = 900
-    enable_enhancement: bool = True
-    force_search_enhancement: bool = True
-    citation: bool = True
-    search_info: bool = True
-    enable_multimedia: bool = True
-    enable_speed_search: bool = False
-
-    @property
-    def has_credentials(self) -> bool:
-        return bool(self.secret_id and self.secret_key)
-
-
-@dataclass
-class ZhipuSettings:
-    api_key: str | None = None
-    model: str = "glm-4.7-flash"
-    base_url: str = "https://api.z.ai/api/paas/v4"
-    temperature: float = 0.4
-    timeout_seconds: int = 900
-    max_tokens: int | None = 32768
-    thinking: bool = False
-    use_builtin_search: bool = False
-    # Engine names differ between the chat tool and the standalone endpoint.
-    search_engine: str = "search_pro_jina"
-    search_api_engine: str = "search-prime"
-    content_size: str = "high"
-    require_search: bool = True
-    search_count: int = 20
-    search_recency: str | None = None
-
-    @property
-    def has_credentials(self) -> bool:
-        return bool(self.api_key)
 
 
 @dataclass
@@ -242,8 +167,6 @@ class Config:
     fetch: dict[str, Any]
     repost_resolution: dict[str, Any]
     registries: dict[str, Any]
-    tencent: TencentSettings
-    zhipu: ZhipuSettings
     serpapi: SerpApiSettings
     claude_cli: ClaudeCliSettings
     project_root: Path
@@ -335,41 +258,6 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
     elif path:
         raise FileNotFoundError(f"config file not found: {candidate}")
 
-    tencent_cfg = data.get("tencent", {})
-    tencent = TencentSettings(
-        secret_id=os.getenv("TENCENT_SECRET_ID") or None,
-        secret_key=os.getenv("TENCENT_SECRET_KEY") or None,
-        region=os.getenv("TENCENT_REGION") or tencent_cfg.get("region") or "ap-guangzhou",
-        model=os.getenv("TENCENT_MODEL") or tencent_cfg.get("model", "hunyuan-turbos-latest"),
-        temperature=float(tencent_cfg.get("temperature", 0.4)),
-        timeout_seconds=int(tencent_cfg.get("timeout_seconds", 900)),
-        enable_enhancement=bool(tencent_cfg.get("enable_enhancement", True)),
-        force_search_enhancement=bool(tencent_cfg.get("force_search_enhancement", True)),
-        citation=bool(tencent_cfg.get("citation", True)),
-        search_info=bool(tencent_cfg.get("search_info", True)),
-        enable_multimedia=bool(tencent_cfg.get("enable_multimedia", True)),
-        enable_speed_search=bool(tencent_cfg.get("enable_speed_search", False)),
-    )
-
-    zhipu_cfg = data.get("zhipu", {})
-    zhipu = ZhipuSettings(
-        api_key=os.getenv("ZHIPU_API_KEY") or os.getenv("ZAI_API_KEY") or None,
-        model=os.getenv("ZHIPU_MODEL") or zhipu_cfg.get("model", "glm-4.7-flash"),
-        base_url=os.getenv("ZHIPU_BASE_URL")
-        or zhipu_cfg.get("base_url", "https://api.z.ai/api/paas/v4"),
-        temperature=float(zhipu_cfg.get("temperature", 0.4)),
-        timeout_seconds=int(zhipu_cfg.get("timeout_seconds", 900)),
-        max_tokens=zhipu_cfg.get("max_tokens") or None,
-        thinking=bool(zhipu_cfg.get("thinking", False)),
-        use_builtin_search=bool(zhipu_cfg.get("use_builtin_search", False)),
-        search_engine=zhipu_cfg.get("search_engine", "search_pro_jina"),
-        search_api_engine=zhipu_cfg.get("search_api_engine", "search-prime"),
-        content_size=zhipu_cfg.get("content_size", "high"),
-        require_search=bool(zhipu_cfg.get("require_search", True)),
-        search_count=int(zhipu_cfg.get("search_count", 20)),
-        search_recency=zhipu_cfg.get("search_recency") or None,
-    )
-
     serp_cfg = data.get("serpapi", {})
     serpapi = SerpApiSettings(
         api_keys=_collect_serpapi_keys(),
@@ -387,11 +275,11 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
         cwd=cli_cfg.get("cwd") or None,
     )
 
-    provider = str(data.get("provider", "tencent")).strip().lower()
-    if provider not in ("tencent", "zhipu", "serpapi", "claude-cli", "mock"):
+    provider = str(data.get("provider", "claude-cli")).strip().lower()
+    if provider not in ("claude-cli", "serpapi", "mock"):
         raise ValueError(
             f"unknown provider {provider!r} in config — "
-            "expected tencent, zhipu, serpapi, claude-cli or mock"
+            "expected claude-cli, serpapi or mock"
         )
 
     return Config(
@@ -402,8 +290,6 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
         fetch=data.get("fetch", {}),
         repost_resolution=data.get("repost_resolution", {}),
         registries=data.get("registries", {}),
-        tencent=tencent,
-        zhipu=zhipu,
         serpapi=serpapi,
         claude_cli=claude_cli,
         project_root=root,

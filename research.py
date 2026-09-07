@@ -125,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider",
-        choices=["claude-cli", "zhipu", "tencent", "serpapi", "mock"],
+        choices=["claude-cli", "serpapi", "mock"],
         help="override config provider",
     )
     parser.add_argument("--config", help="path to a config file (default: ./config.yaml)")

@@ -34,7 +34,7 @@ pip install -r requirements.txt
 python -m unittest discover tests
 ```
 
-`OK (232 tests)`가 나오면 정상임. 이 테스트는 네트워크·API 키가 필요 없음.
+`OK (209 tests)`가 나오면 정상임. 이 테스트는 네트워크·API 키가 필요 없음.
 
 ---
 
