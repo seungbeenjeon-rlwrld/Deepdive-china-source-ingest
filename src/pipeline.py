@@ -49,7 +49,12 @@ from .parsing import (
     parse_source_blocks,
     verify_labels,
 )
-from .parsing import _is_legal_entity, _record_from_citation, _record_from_page
+from .parsing import (
+    _is_legal_entity,
+    _mentions_any,
+    _record_from_citation,
+    _record_from_page,
+)
 from .provider import ProviderError, ResearchProvider
 from .reports import _names_markdown, _records_markdown, _sweep_markdown, index_markdown
 from .storage import (
@@ -269,11 +274,19 @@ class Pipeline:
         self.metadata.local_sources_status = "running"
         self.storage.write_metadata(self.metadata)
 
+        # Every Chinese name stage 0 found, so a hit naming the full legal
+        # entity is kept even though the query used the short form.
+        names = [
+            n for n in (names_meta.get("search_names") or [])
+            if n and any("\u4e00" <= c <= "\u9fff" for c in n)
+        ] or [name]
+
         per_domain = int(cfg.get("results_per_domain", 20))
         records: list[SourceRecord] = []
         failures: list[dict[str, Any]] = []
         raw: list[dict[str, Any]] = []
         by_domain: dict[str, int] = {}
+        off_topic: dict[str, int] = {}
 
         for domain in domains:
             query = f"site:{domain} {name}"
@@ -286,15 +299,20 @@ class Pipeline:
             if result.get("raw"):
                 raw.append({"domain": domain, "query": query, "response": result["raw"]})
 
-            found = 0
+            found = dropped = 0
             for page in result.get("pages") or []:
                 record = _record_from_page(page, company, query=query, site=domain)
                 record.origin = "local_domain_search"
                 record.extra = {**record.extra, "local_domain": domain}
+                if not _mentions_any(record, names):
+                    dropped += 1
+                    continue
                 records.append(record)
                 found += 1
             by_domain[domain] = found
-            self._progress(f"      {domain}: {found}")
+            off_topic[domain] = dropped
+            note = f" ({dropped} off-topic dropped)" if dropped else ""
+            self._progress(f"      {domain}: {found}{note}")
 
         # Public pages get their bodies read; gated registries never do.
         fetched = self._fetch_local_bodies(records, cfg)
@@ -304,6 +322,7 @@ class Pipeline:
             "search_name": name,
             "domains": domains,
             "results_by_domain": by_domain,
+            "off_topic_dropped_by_domain": off_topic,
             "results_total": len(records),
             "bodies_fetched": fetched,
             "failures": failures,
@@ -315,7 +334,10 @@ class Pipeline:
                 "爱企查 …) are gated: their pages are never fetched, so the indexed "
                 "title and snippet are the evidence and are labelled "
                 "SEARCH_SNIPPET_ONLY. Procurement notices on ccgp.gov.cn are public "
-                "and have their text preserved."
+                "and have their text preserved. A `site:` query is a full-text "
+                "search, so results that never mention the company are dropped: "
+                "measured on 逐际动力, all 14 ccgp.gov.cn hits were documents "
+                "containing the common word 动力 and none named the company."
             ),
         }
         if self.config.output.get("save_json", True):

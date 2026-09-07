@@ -728,6 +728,84 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         self.assertEqual(config.search_sweep["provider"], "mock")
 
 
+class TestLocalDomainResultsMustNameTheCompany(unittest.TestCase):
+    """A `site:` query is a full-text search, so common-word names over-match.
+
+    Measured on LimX Dynamics (逐际动力): all 14 ccgp.gov.cn hits were
+    procurement documents containing 动力 — 混合动力试验台, 动力配电箱,
+    橡筋动力滑翔机 — and none named the company. Unitree was unaffected because
+    宇树 is rare, which is why this had to be checked against a second company
+    instead of assumed from the first.
+    """
+
+    NAMES = ["逐际动力", "深圳逐际动力科技有限公司"]
+
+    def _record(self, title, content=None):
+        from src.models import SourceRecord
+
+        return SourceRecord(source_id="x", title=title, content=content,
+                            retrieval_url="http://x")
+
+    def test_a_common_word_match_is_rejected(self):
+        from src.parsing import _mentions_any
+
+        for title in ("北京工业大学 混合动力试验台实时控制系统",
+                      "动力配电箱采购",
+                      '"轻骑士"橡筋动力滑翔机'):
+            self.assertFalse(_mentions_any(self._record(title), self.NAMES), title)
+
+    def test_the_company_named_in_the_title_is_kept(self):
+        from src.parsing import _mentions_any
+
+        self.assertTrue(_mentions_any(
+            self._record("逐际动力科技 - 天眼查", "股东信息"), self.NAMES))
+
+    def test_the_company_named_only_in_the_snippet_is_kept(self):
+        """An award notice names the supplier in the body, not the title."""
+        from src.parsing import _mentions_any
+
+        self.assertTrue(_mentions_any(
+            self._record("某项目中标公告",
+                         "供应商名称:深圳逐际动力科技有限公司 中标金额:120万元"),
+            self.NAMES))
+
+    def test_an_empty_result_is_rejected(self):
+        from src.parsing import _mentions_any
+
+        self.assertFalse(_mentions_any(self._record("", ""), self.NAMES))
+
+    def test_the_filter_runs_and_is_reported(self):
+        h = Harness(MockProvider())
+        try:
+            h.config.local_sources = {
+                **h.config.local_sources, "enabled": True,
+                "domains": ["ccgp.gov.cn"], "max_pages_fetched": 0,
+            }
+
+            class Searcher:
+                name = "stub"
+                supports_search = True
+
+                @staticmethod
+                def search(query, count=20):
+                    return {"pages": [
+                        {"title": "逐际动力中标公告", "url": "http://a",
+                         "content": "供应商:深圳逐际动力科技有限公司"},
+                        {"title": "混合动力试验台采购", "url": "http://b",
+                         "content": "动力配电箱 160台"},
+                    ]}
+
+            h.pipeline._retrieval_provider = lambda: Searcher()
+            payload = h.pipeline.run_local_sources(
+                "LimX Dynamics", {"search_names": self.NAMES}
+            )
+            self.assertEqual(payload["results_total"], 1)
+            self.assertEqual(payload["off_topic_dropped_by_domain"],
+                             {"ccgp.gov.cn": 1})
+        finally:
+            h.cleanup()
+
+
 class TestEverySavedSourceIsIndexed(unittest.TestCase):
     """A source missing from 00_INDEX.md is invisible downstream.
 

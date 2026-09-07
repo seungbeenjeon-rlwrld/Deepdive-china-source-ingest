@@ -617,6 +617,23 @@ _LEGAL_ENTITY_SUFFIXES = (
 )
 
 
+def _mentions_any(record, names: list[str]) -> bool:
+    """Does this result actually name the company?
+
+    A `site:` query is a full-text search of the domain, so a company name
+    built from common words matches documents that have nothing to do with it.
+    Measured on LimX Dynamics (逐际动力): every one of the 14 ccgp.gov.cn hits
+    was a procurement document containing 动力 — 混合动力试验台, 动力配电箱,
+    橡筋动力滑翔机 — and not one mentioned the company. Unitree was unaffected
+    because 宇树 is rare, which is why this had to be checked on a second name
+    rather than assumed.
+    """
+    haystack = f"{record.title or ''}\n{record.content or ''}"
+    if not haystack.strip():
+        return False
+    return any(n and n in haystack for n in names)
+
+
 def _is_legal_entity(name: str) -> bool:
     """Is this a registered entity name, not just a brand?"""
     if "合伙" in name:
