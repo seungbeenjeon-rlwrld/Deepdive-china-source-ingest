@@ -303,6 +303,29 @@ def wants_filing_text(title: str) -> bool:
     return any(pattern in title for pattern in FILING_TEXT_PATTERNS)
 
 
+def _clean_assignee(value: str) -> str:
+    """Google marks the matched span with <b> and variant chars with ▲▼."""
+    return re.sub(r"<[^>]+>|[▲▼]", "", value or "").strip()
+
+
+def _assignee_matches(got: str, asked: str) -> bool:
+    """Is this patent assigned to the entity we queried?
+
+    Not string containment: Google returns the traditional-character form of a
+    simplified name — 杭州宇▲樹▼科技有限公司 for 杭州宇树科技有限公司 — and a
+    containment check rejected it as a different company. Character overlap
+    absorbs the variant (9 of 10 characters match) while still rejecting an
+    unrelated assignee (普元信息 against 智元机器人 shares only 元).
+    """
+    got, asked = _clean_assignee(got), _clean_assignee(asked)
+    if not got or not asked:
+        return not got  # no assignee reported: keep, the query already filtered
+    if asked in got or got in asked:
+        return True
+    shared = sum(1 for ch in set(asked) if ch in got)
+    return shared / len(set(asked)) >= 0.7
+
+
 def _issuer_matches(sec_name: str, search_key: str) -> bool:
     """Is this filing actually filed BY the entity we searched for?
 
@@ -650,11 +673,18 @@ class PatentCollector:
 
         records: list[SourceRecord] = []
         failures: list[dict] = []
+        wrong_assignee: dict[str, int] = {}
         total: Optional[int] = None
         per_page = 100
 
         for page in range(0, max(1, -(-max_records // per_page)) + 1):
-            inner = quote(f'q="{assignee}"&num={per_page}&page={page}', safe="")
+            # assignee=, not q=. q= is a full-text search, so it returns
+            # patents that merely mention the company: measured, q="宇树科技"
+            # gives 276 results against assignee="宇树科技"'s 188 — 88 of them
+            # (32%) assigned to somebody else and filed here as the target's IP.
+            inner = quote(
+                f'assignee="{assignee}"&num={per_page}&page={page}', safe=""
+            )
             url = f"{PATENTS_QUERY_URL}?url={inner}&exp="
             payload = None
             last_error = None
@@ -702,6 +732,15 @@ class PatentCollector:
                 if len(records) >= max_records:
                     break
                 patent = item.get("patent") or {}
+                # Belt and braces alongside the assignee= query, and the same
+                # guard the filings channel uses: the returned assignee must
+                # actually be the entity we asked for. Google highlights the
+                # match with <b> tags, so strip them before comparing.
+                got = patent.get("assignee") or ""
+                if not _assignee_matches(got, assignee):
+                    key = _clean_assignee(got) or "?"
+                    wrong_assignee[key] = wrong_assignee.get(key, 0) + 1
+                    continue
                 number = patent.get("publication_number")
                 if not number:
                     continue
@@ -748,5 +787,17 @@ class PatentCollector:
 
             if len(records) >= max_records or len(items) < per_page:
                 break
+
+        if wrong_assignee:
+            self.log.info(
+                "dropped patents assigned elsewhere for %r: %s",
+                assignee, wrong_assignee,
+            )
+            failures.append({
+                "stage": "assignee_check",
+                "assignee": assignee,
+                "error": "patents assigned to other entities dropped",
+                "dropped_by_assignee": wrong_assignee,
+            })
 
         return records, failures, total

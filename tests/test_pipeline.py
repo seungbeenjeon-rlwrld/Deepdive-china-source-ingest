@@ -728,6 +728,64 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         self.assertEqual(config.search_sweep["provider"], "mock")
 
 
+class TestPatentsMustBeAssignedToTheTarget(unittest.TestCase):
+    """The query was q=, a full-text search, not assignee=.
+
+    Measured live: q="宇树科技" returns 276 results against assignee="宇树科技"'s
+    188. The 88 extra are patents that merely mention the company and are
+    assigned elsewhere — filed in the corpus as the target's IP.
+
+    The record-level check cannot be plain containment. Google returns the
+    traditional-character form of a simplified name (杭州宇▲樹▼科技有限公司 for
+    杭州宇树科技有限公司) and containment rejected it as a different company.
+    """
+
+    def test_the_query_uses_the_assignee_field(self):
+        source = (PROJECT_ROOT / "src" / "collectors.py").read_text(encoding="utf-8")
+        self.assertIn('assignee="{assignee}"', source)
+        self.assertNotIn('q="{assignee}"', source)
+
+    def test_a_traditional_character_variant_is_kept(self):
+        from src.collectors import _assignee_matches
+
+        self.assertTrue(_assignee_matches(
+            "杭州宇▲樹▼科技有限公司", "杭州宇树科技有限公司"))
+
+    def test_the_highlighted_match_is_kept(self):
+        from src.collectors import _assignee_matches
+
+        self.assertTrue(_assignee_matches(
+            "杭州<b>宇树科技</b>有限公司", "宇树科技"))
+
+    def test_an_unrelated_assignee_is_rejected(self):
+        from src.collectors import _assignee_matches
+
+        self.assertFalse(_assignee_matches("普元信息技术股份有限公司", "智元机器人"))
+        self.assertFalse(_assignee_matches(
+            "深圳市大疆创新科技有限公司", "杭州宇树科技有限公司"))
+
+    def test_a_missing_assignee_is_kept(self):
+        """The assignee= query already filtered; absence is not evidence."""
+        from src.collectors import _assignee_matches
+
+        self.assertTrue(_assignee_matches("", "宇树科技"))
+
+    def test_patent_titles_are_not_expected_to_name_the_company(self):
+        """Guard against someone applying the wrong identity check here.
+
+        A patent title describes an invention, so 0 of 33 in the Unitree run
+        mention the company. The anchor is the assignee field, not the text.
+        """
+        from src.models import SourceRecord
+        from src.parsing import _mentions_any
+
+        record = SourceRecord(
+            source_id="P1", title="一种基于动捕设备的机器人关节控制方法和系统",
+            retrieval_url="http://p/1", origin="patent_registry",
+        )
+        self.assertFalse(_mentions_any(record, ["宇树科技"]))
+
+
 class TestFilingsMustComeFromTheRightIssuer(unittest.TestCase):
     """巨潮资讯网 search is full-text, so it returns other issuers' filings.
 
