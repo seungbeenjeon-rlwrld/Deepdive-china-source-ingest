@@ -46,7 +46,7 @@ python -m unittest discover tests
 아래처럼 나오면 정상입니다.
 
 ```text
-OK (211 tests)
+OK (217 tests)
 ```
 
 이 테스트는 네트워크와 API Key가 필요하지 않습니다.
@@ -282,7 +282,7 @@ metadata.json                채널별 성공/실패 및 건수
 02_sources.md/.json          Stage 2 — 수집 결과
 03_search_sweep.md/.json     Baidu 검색 38건
 06_exchange_filings.md/.json 공시 19건 + 전문 35조각 538,087자
-07_patents.md/.json          특허 33건
+07_patents.md/.json          특허 (법인명 전부 조회)
 08_local_sources.md/.json    중국 로컬 도메인 78건 (조달·工商)
 raw_sources/source_NNN.md    source 1건 = 파일 1개 (총 221건)
 logs/run.log                 실행 로그

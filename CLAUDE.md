@@ -28,8 +28,9 @@ research/{회사명}/{실행시각}/
 ├── 02_sources.json            소스 색인 + 라벨 감사 결과
 ├── 03_search_sweep.json       Baidu 구조화 검색 결과
 ├── 05_reposts.json            차단된 소스의 재게시본
-├── 06_exchange_filings.json   거래소 공시 + PDF 직링크
-├── 07_patents.json            특허
+├── 06_exchange_filings.json   거래소 공시 링크 + **1차 문서 전문(장별)**
+├── 07_patents.json            특허 (법인명 전부에 대해 조회)
+├── 08_local_sources.json      중국 로컬 도메인 — 정부조달·工商 등기
 ├── raw_sources/source_NNN.md  소스 1건 = 파일 1개 (YAML front matter + 본문)
 └── logs/run.log
 ```
@@ -47,7 +48,7 @@ research/{회사명}/{실행시각}/
    검색 후보이지 검증된 사실이 아님
 4. **`01_entity_discovery.md`** — 회사의 법인명·별칭·자회사·제품. 이후 모든 검색·대조의 기준
 5. **`raw_sources/`** — 개별 증거. 전문 검색(`grep`)으로 필요한 것만 열 것
-6. 채널별 요약이 필요하면 `04`~`07`의 `.json`
+6. 채널별 요약이 필요하면 `03`·`05`~`08`의 `.json`
 
 **전체를 읽지 말 것.** 실측: 한 실행이 디스크에 2.3MB 인데 실제 내용은 43KB 임.
 나머지는 `.json` / `.md` 이중 보관과 원본 API 응답이므로, 통째로 읽으면 대부분이
@@ -134,7 +135,9 @@ derived:
 | 2 | 특허·논문 | `07_patents.json`, `origin: patent_registry` |
 | 3 | 고품질 산업·경제 매체 | `origin: provider_search` 중 언론사 도메인 |
 | 4 | 재게시본 | `05_reposts.json`, `origin: repost_resolution` |
+| 5 | 정부조달 낙찰공고 | `08_local_sources.json`, `local_domain: ccgp.gov.cn` — 낙찰 금액이 스니펫에 포함됨 |
 | 6 | 검색 스니펫 | `origin: provider_search`, `SEARCH_SNIPPET_ONLY` |
+| 6 | 工商 등기 스니펫 | `08_local_sources.json`, `local_domain: tianyancha.com` 등. 로그인 벽이라 스니펫만 |
 
 **재게시본 주의.** `05_reposts.json`의 자료는 원본이 차단되어 다른 곳에서 가져온 것임.
 `extra.reposts_source_id`가 원본 레코드를, `extra.original_url`이 원본 URL을 가리킴.
@@ -183,10 +186,8 @@ derived:
 완료된 Stage 2 는 실수로 덮어쓰지 못하게 막혀 있으며, 의도적 재생성은 `--force` 임.
 
 ```bash
-# 같은 회사 재수집 (기존 실행은 덮어쓰지 않음)
-python research.py --company "智元机器人" \
-  --official-site "https://www.agibot.com.cn/article/315" \
-  --filings "上纬新材"
+# 같은 회사 재수집 (기존 실행은 덮어쓰지 않음). 회사명만으로 충분함
+python research.py --company "智元机器人"
 
 # Stage 1은 재사용하고 Stage 2만 다시
 python research.py --resume research/智元机器人/2026-09-04_034201 --stage 2
@@ -199,8 +200,10 @@ python research.py --resume research/智元机器人/2026-09-04_034201 --stage 2
 
 ## 6. 코드를 수정할 때
 
-- 테스트를 먼저 확인할 것: `python -m unittest discover tests` (202개)
-- 새 provider는 `ResearchProvider` 서브클래스 + `build_provider()` 등록
+- 테스트를 먼저 확인할 것: `python -m unittest discover tests` (217개)
+- 새 provider는 `ResearchProvider` 서브클래스 + `build_provider()` 등록.
+  등록을 빼먹으면 CLI 선택지와 어긋나므로 `TestEveryAdvertisedProviderBuilds`
+  가 잡아냄 (실제로 `claude-cli` 분기가 이렇게 사라진 적 있음)
 - 기본 provider는 `claude-cli` 임. 즉 파이프라인이 로컬 `claude` 를 서브프로세스로
   호출함. 이 세션 안에서 `python research.py` 를 돌리면 Claude가 중첩 호출됨 —
   동작하지만 사용량이 두 배로 나가므로, 대량 실행은 별도 터미널에서 할 것
