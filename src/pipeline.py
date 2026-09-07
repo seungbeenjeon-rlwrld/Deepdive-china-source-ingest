@@ -1441,11 +1441,6 @@ class Pipeline:
         for offset, record in enumerate(records, start=1):
             record.source_id = f"SEARCH_{offset:03d}"
 
-        start_index = int(self.metadata.counts.get("raw_source_files", 0)) + 1
-        if self.config.output.get("save_raw_sources", True):
-            for offset, record in enumerate(records):
-                self.storage.save_source(record, index=start_index + offset)
-
         payload = {
             "target_company": company,
             "queries_available": len(queries),
@@ -1473,14 +1468,17 @@ class Pipeline:
             self.storage.save_json(RAW_SWEEP, raw_responses)
         if self.config.output.get("save_markdown", True):
             self.storage.save(SWEEP_MD, _sweep_markdown(company, payload))
+        # Through _persist_records like every other channel. Writing the files
+        # here with a private index left the sweep out of 00_INDEX.md — 38 of
+        # 221 sources in the shipped Unitree run — and out of the URL de-dupe
+        # and title clustering with them. Both CLAUDE.md and the HANDOFF tell
+        # the reader to pick from the index, so those records were invisible.
+        self._persist_records(records)
 
         self.metadata.search_sweep_status = "completed" if not failures else "completed_with_errors"
         self.metadata.counts["search_sweep_results"] = len(records)
         self.metadata.counts["engine_suggested_anchors"] = len(discovered_anchors)
         self.metadata.counts["search_sweep_failures"] = len(failures)
-        self.metadata.counts["raw_source_files"] = (
-            int(self.metadata.counts.get("raw_source_files", 0)) + len(records)
-        )
         if failures:
             self.metadata.search_sweep_error = f"{len(failures)} query/queries failed"
         self.storage.write_metadata(self.metadata)

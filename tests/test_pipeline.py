@@ -728,6 +728,62 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         self.assertEqual(config.search_sweep["provider"], "mock")
 
 
+class TestEverySavedSourceIsIndexed(unittest.TestCase):
+    """A source missing from 00_INDEX.md is invisible downstream.
+
+    Both CLAUDE.md and the HANDOFF tell the reader to open the index and pick
+    from it. The sweep used to write its files with a private counter instead
+    of going through _persist_records, so 38 of 221 sources in the shipped
+    Unitree run were absent from the index, from the URL de-dupe and from the
+    title clustering.
+    """
+
+    def _saved_and_indexed(self, harness):
+        index = (harness.run_dir / "00_INDEX.md").read_text(encoding="utf-8")
+        on_disk = sorted(
+            p.stem for p in (harness.run_dir / "raw_sources").glob("*.json")
+        )
+        return on_disk, index
+
+    def test_sweep_records_reach_the_index(self):
+        h = Harness(MockProvider())
+        try:
+            h.config.search_sweep = {
+                **h.config.search_sweep, "enabled": True, "provider": None,
+                "site_filters": [None], "industries": [],
+            }
+            h.pipeline.run_search_sweep("AgiBot", ["智元 供应商"])
+            on_disk, index = self._saved_and_indexed(h)
+            self.assertTrue(on_disk, "the sweep saved nothing to raw_sources")
+            for stem in on_disk:
+                self.assertIn(stem, index, f"{stem} is on disk but not indexed")
+        finally:
+            h.cleanup()
+
+    def test_channels_do_not_overwrite_each_others_files(self):
+        """Two channels persisting in turn must not reuse an index."""
+        from src.models import SourceRecord
+
+        h = Harness(MockProvider())
+        try:
+            def record(name, origin):
+                return SourceRecord(
+                    source_id=name, title=name,
+                    retrieval_url=f"http://x/{name}",
+                    content_access_status="SEARCH_SNIPPET_ONLY",
+                    content="내용" * 60, origin=origin,
+                )
+
+            h.pipeline._persist_records([record("A", "patent_registry")])
+            h.pipeline._persist_records([record("B", "provider_search")])
+            on_disk, index = self._saved_and_indexed(h)
+            self.assertEqual(len(on_disk), 2, on_disk)
+            for stem in on_disk:
+                self.assertIn(stem, index)
+        finally:
+            h.cleanup()
+
+
 class TestPatentsCoverEveryAssigneeName(unittest.TestCase):
     """A rename splits the patent record set; one name loses most of it."""
 
