@@ -873,6 +873,39 @@ class TestFilingDraftPreference(unittest.TestCase):
         self.assertEqual(attempted, ["宇树科技首次公开发行股票并在科创板上市招股意向书"])
 
 
+class TestSearchKeyIsRequired(unittest.TestCase):
+    """A missing SerpApi key must stop the run, not quietly degrade it."""
+
+    def _config(self, keys):
+        h = Harness(MockProvider())
+        h.config.serpapi.api_keys = keys
+        self.addCleanup(h.cleanup)
+        return h.config
+
+    def test_a_missing_key_is_reported(self):
+        import research
+
+        message = research.require_search_key(self._config([]))
+        self.assertIsNotNone(message)
+        self.assertIn("SerpApi", message)
+        # The message must say why, not just that. Losing the key loses the
+        # Chinese registry name, which loses the filings.
+        self.assertIn("--provider mock", message)
+
+    def test_a_present_key_passes(self):
+        import research
+
+        self.assertIsNone(research.require_search_key(self._config(["k"])))
+
+    def test_mock_runs_are_exempt(self):
+        """--provider mock is pinned offline, so it needs no key."""
+        import research
+
+        config = self._config([])
+        research.pin_offline(config)
+        self.assertEqual(config.search_sweep["provider"], "mock")
+
+
 class TestFilingCountsAreNotConflated(unittest.TestCase):
     """19 filings plus 35 text sections is not "54 filings"."""
 

@@ -65,6 +65,34 @@ def pin_offline(config) -> None:
     }
 
 
+def require_search_key(config) -> Optional[str]:
+    """SerpApi is a hard dependency, so say so before any work is done.
+
+    Without it the search provider silently fell back to the chat provider,
+    which has no structured search, so retrieval injection ran at zero results
+    and stages 0-2 worked blind — measured, the model then reported
+    "本轮 Stage 2 新发现 0 条". Everything downstream depends on this too:
+    the Chinese registry name that finds the filings comes out of stage 0,
+    which is grounded on injected Baidu results.
+
+    Returns an error message, or None when the key is present.
+    """
+    if getattr(config.serpapi, "api_keys", None):
+        return None
+    return (
+        "No SerpApi key found, and it is required.\n"
+        "  Baidu search grounds stage 0's name resolution, which is what turns\n"
+        "  an English company name into the Chinese registry name the filings\n"
+        "  and patent channels search on. Without it the run completes but\n"
+        "  finds almost nothing.\n\n"
+        "  Get a free key (no card, 250 searches/month):\n"
+        "    https://serpapi.com/manage-api-key\n"
+        "  Then put it in .env:\n"
+        "    SERPAPI_KEY=...\n\n"
+        "  To test the plumbing without any key, use --provider mock."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="research.py",
@@ -195,6 +223,12 @@ def main(argv: list[str] | None = None) -> int:
     provider_name = args.provider or config.provider
     if provider_name == "mock":
         pin_offline(config)
+    else:
+        missing = require_search_key(config)
+        if missing:
+            say()
+            say(missing)
+            return 2
     if args.no_search_sweep:
         config.search_sweep = {**config.search_sweep, "enabled": False}
     if args.no_reposts:
