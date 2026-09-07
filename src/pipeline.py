@@ -585,7 +585,12 @@ class Pipeline:
         return payload
 
     # -- repost resolution for sources whose original is gated --------------
-    def run_repost_resolution(self, company: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
+    def run_repost_resolution(
+        self,
+        company: str,
+        sources: list[dict[str, Any]],
+        names_meta: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
         cfg = self.config.repost_resolution
         if not cfg.get("enabled", True):
             self.metadata.repost_status = "disabled"
@@ -634,6 +639,32 @@ class Pipeline:
         records, gaps = resolver.resolve(
             blocked, company, max_sources=int(cfg.get("max_sources", 10))
         )
+
+        # The same guard the filings and local-domain channels use: a page that
+        # never names the company is not a repost of an article about it.
+        # Measured over 50 gated sources, 7 of 20 "recoveries" were pages like
+        # 微信公众平台 (a login screen), 重庆东站停车收费标准 and a ferroelectric
+        # transistor announcement — long enough and title-similar enough to
+        # clear the story check, but about something else entirely.
+        names = [company] + [
+            n for n in ((names_meta or {}).get("search_names") or []) if n
+        ]
+        kept: list[SourceRecord] = []
+        for record in records:
+            if _mentions_any(record, names):
+                kept.append(record)
+                continue
+            gaps.append({
+                "source_id": (record.extra or {}).get("reposts_source_id"),
+                "title": record.title,
+                "url": record.retrieval_url,
+                "reason": "candidate page never names the company",
+            })
+        if len(kept) != len(records):
+            self.log.info(
+                "dropped %d off-topic repost(s)", len(records) - len(kept)
+            )
+        records = kept
 
         payload = {
             "target_company": company,

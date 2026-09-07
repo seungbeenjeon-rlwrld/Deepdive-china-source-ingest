@@ -303,6 +303,29 @@ def wants_filing_text(title: str) -> bool:
     return any(pattern in title for pattern in FILING_TEXT_PATTERNS)
 
 
+def _issuer_matches(sec_name: str, search_key: str) -> bool:
+    """Is this filing actually filed BY the entity we searched for?
+
+    巨潮资讯网 search is full-text, so a filing is returned whenever the query
+    string appears anywhere in the document. Measured on AgiBot: searching
+    智元机器人 returns three filings, all of them 普元信息 (688118) — an
+    unrelated STAR-market software company whose independent-director reports
+    happen to mention 智元机器人. Searching 智元 returns 泰禾智能, 正元智慧,
+    创世纪 and 上纬新材: four unrelated issuers.
+
+    The check is against the search key rather than the target company's own
+    names, because both cases must pass: a listed company filing under its own
+    name (Unitree searched as 宇树科技, secName 宇树科技) and a listed entity a
+    private company controls (AgiBot's filings are 上纬新材's). Containment
+    either way handles 简称 against 全称.
+    """
+    a = (sec_name or "").strip()
+    b = (search_key or "").strip()
+    if not a or not b:
+        return False
+    return a in b or b in a
+
+
 class ExchangeFilingCollector:
     """Exchange/regulatory disclosures from 巨潮资讯网 (cninfo).
 
@@ -332,6 +355,7 @@ class ExchangeFilingCollector:
 
         records: list[SourceRecord] = []
         failures: list[dict] = []
+        wrong_issuer: dict[str, int] = {}
         page_size = 30
         seen: set[str] = set()
 
@@ -390,6 +414,15 @@ class ExchangeFilingCollector:
                 sec_code = _strip_em(item.get("secCode"))
                 sec_name = _strip_em(item.get("secName"))
 
+                # Full-text search returns other issuers' filings that merely
+                # mention the query. Without this the corpus would carry
+                # another company's board reports as the target's disclosures.
+                if not _issuer_matches(sec_name, search_key):
+                    wrong_issuer[sec_name or "?"] = (
+                        wrong_issuer.get(sec_name or "?", 0) + 1
+                    )
+                    continue
+
                 record = SourceRecord(
                     source_id=f"FILING_{start_index + len(records):03d}",
                     title=title,
@@ -432,6 +465,20 @@ class ExchangeFilingCollector:
 
             if len(records) >= max_records:
                 break
+
+        if wrong_issuer:
+            self.log.info(
+                "dropped filings from other issuers for %r: %s",
+                search_key, wrong_issuer,
+            )
+            failures.append({
+                "stage": "issuer_check",
+                "search_key": search_key,
+                "error": "filings from other issuers dropped (cninfo search is "
+                         "full-text, so unrelated companies that mention the "
+                         "query are returned)",
+                "dropped_by_issuer": wrong_issuer,
+            })
 
         if extract_text:
             extra_records, extract_failures = self._extract_texts(

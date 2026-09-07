@@ -728,6 +728,118 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         self.assertEqual(config.search_sweep["provider"], "mock")
 
 
+class TestFilingsMustComeFromTheRightIssuer(unittest.TestCase):
+    """巨潮资讯网 search is full-text, so it returns other issuers' filings.
+
+    Reported against AgiBot: searching 智元机器人 returned three filings, all
+    of them 普元信息 (688118) — an unrelated STAR-market software company whose
+    independent-director reports mention 智元机器人. Live, searching 智元 was
+    worse: 30 filings across nine issuers (正元智慧 9, 天元智能 8, 利元亨 6 …).
+    secName was stored on every record and never compared to anything.
+    """
+
+    def test_an_unrelated_issuer_is_rejected(self):
+        from src.collectors import _issuer_matches
+
+        self.assertFalse(_issuer_matches("普元信息", "智元机器人"))
+        self.assertFalse(_issuer_matches("正元智慧", "智元"))
+        self.assertFalse(_issuer_matches("天元智能", "智元"))
+
+    def test_the_company_filing_under_its_own_name_is_kept(self):
+        from src.collectors import _issuer_matches
+
+        self.assertTrue(_issuer_matches("宇树科技", "宇树科技"))
+
+    def test_a_controlled_listed_entity_is_kept(self):
+        """AgiBot's filings are 上纬新材's, so the check is against the search
+        key rather than the target company's own names."""
+        from src.collectors import _issuer_matches
+
+        self.assertTrue(_issuer_matches("上纬新材", "上纬新材"))
+        self.assertTrue(_issuer_matches("上纬新材", "上纬新材料科技股份有限公司"))
+
+    def test_a_missing_issuer_is_rejected(self):
+        from src.collectors import _issuer_matches
+
+        self.assertFalse(_issuer_matches("", "宇树科技"))
+        self.assertFalse(_issuer_matches("宇树科技", ""))
+
+    def test_the_key_probe_rejects_a_key_that_names_no_issuer(self):
+        """Otherwise derive_channels would pick 智元机器人 and index 普元信息."""
+        h = Harness(MockProvider())
+        try:
+            calls = []
+
+            def collect(company, key, *, max_records=60, **kw):
+                calls.append(key)
+                # What live cninfo returns: nothing, once the issuer guard runs.
+                return ([], [{"stage": "issuer_check",
+                              "dropped_by_issuer": {"普元信息": 3}}])
+
+            # _has_filings imports the collector inside the function, so the
+            # patch has to land on src.collectors, not src.pipeline.
+            import src.collectors as mod
+            original = mod.ExchangeFilingCollector
+            mod.ExchangeFilingCollector = lambda *_a, **_k: type(
+                "C", (), {"collect": staticmethod(collect)}
+            )()
+            try:
+                self.assertFalse(h.pipeline._has_filings("智元机器人"))
+            finally:
+                mod.ExchangeFilingCollector = original
+            self.assertEqual(calls, ["智元机器人"])
+        finally:
+            h.cleanup()
+
+
+class TestRepostsMustNameTheCompany(unittest.TestCase):
+    """7 of 20 recoveries over 50 gated sources were about something else."""
+
+    def test_an_off_topic_page_becomes_a_gap(self):
+        from src.models import SourceRecord
+
+        h = Harness(MockProvider())
+        try:
+            def resolve(blocked, company, **kw):
+                return ([
+                    SourceRecord(source_id="R1", title="宇树科技完成更名",
+                                 retrieval_url="http://a",
+                                 content="宇树科技 王兴兴 任董事长" * 20,
+                                 content_access_status="VERBATIM_FULL_TEXT",
+                                 origin="repost_resolution",
+                                 extra={"reposts_source_id": "S1"}),
+                    SourceRecord(source_id="R2", title="微信公众平台",
+                                 retrieval_url="http://b",
+                                 content="登录 注册 帮助中心" * 40,
+                                 content_access_status="VERBATIM_FULL_TEXT",
+                                 origin="repost_resolution",
+                                 extra={"reposts_source_id": "S2"}),
+                ], [])
+
+            import src.pipeline as mod
+            original = mod.RepostResolver
+            mod.RepostResolver = lambda *_a, **_k: type(
+                "R", (), {"resolve": staticmethod(resolve)}
+            )()
+            try:
+                payload = h.pipeline.run_repost_resolution(
+                    "Unitree",
+                    [{"content_access_status": "URL_ONLY",
+                      "canonical_url": "https://mp.weixin.qq.com/s/x",
+                      "source_id": "S1", "title": "宇树科技完成更名"}],
+                    {"search_names": ["宇树科技", "宇树"]},
+                )
+            finally:
+                mod.RepostResolver = original
+
+            self.assertEqual(payload["reposts_found"], 1)
+            self.assertEqual(payload["sources"][0]["title"], "宇树科技完成更名")
+            reasons = [g.get("reason") for g in payload["unresolved"]]
+            self.assertIn("candidate page never names the company", reasons)
+        finally:
+            h.cleanup()
+
+
 class TestLocalDomainResultsMustNameTheCompany(unittest.TestCase):
     """A `site:` query is a full-text search, so common-word names over-match.
 

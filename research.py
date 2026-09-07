@@ -531,7 +531,9 @@ def main(argv: list[str] | None = None) -> int:
     # ---- repost resolution ---------------------------------------------
     if exit_code == 0 and config.repost_resolution.get("enabled", True):
         try:
-            result = pipeline.run_repost_resolution(company, stage2_sources)
+            result = pipeline.run_repost_resolution(
+                company, stage2_sources, names_meta
+            )
             if "skipped" in result:
                 log.info("repost resolution skipped: %s", result["skipped"])
         except Exception as exc:
