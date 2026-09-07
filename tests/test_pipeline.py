@@ -728,6 +728,65 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         self.assertEqual(config.search_sweep["provider"], "mock")
 
 
+class TestSweepReportsCallsNotJustQueries(unittest.TestCase):
+    """An AgiBot run said "using 6 of 18 queries" then counted to 12.
+
+    Each query runs once per site filter, so the call count is a multiple of
+    the query count — and it is calls that spend the 250/month quota.
+    """
+
+    def _lines(self, *, filters, queries, max_queries):
+        h = Harness(MockProvider())
+        self.addCleanup(h.cleanup)
+        h.config.search_sweep = {
+            **h.config.search_sweep, "enabled": True, "provider": None,
+            "site_filters": filters, "industries": [],
+            "max_queries": max_queries,
+        }
+        lines = []
+        h.pipeline._progress = lines.append
+        h.pipeline.run_search_sweep("X", queries)
+        return lines
+
+    def test_the_call_count_is_stated(self):
+        lines = self._lines(filters=[None, "mp.weixin.qq.com"],
+                            queries=["a", "b", "c", "d"], max_queries=3)
+        self.assertTrue(any("3 queries x 2 site filter(s) = 6 searches" in x
+                            for x in lines), lines)
+        self.assertTrue(any("search 1/6" in x for x in lines), lines)
+
+    def test_no_multiplier_no_extra_line(self):
+        lines = self._lines(filters=[None], queries=["a", "b"], max_queries=2)
+        self.assertFalse(any("searches" in x and "queries x" in x
+                             for x in lines), lines)
+
+
+class TestASkippedChannelSaysSo(unittest.TestCase):
+    """An AgiBot run finished with patents_status still "pending"."""
+
+    def test_status_and_note_are_set(self):
+        from src.models import RunMetadata
+        from src.utils import utc_now_iso
+
+        metadata = RunMetadata(
+            target_company="AgiBot", company_slug="agibot",
+            run_dir="/tmp/x", started_at=utc_now_iso(), provider="mock",
+        )
+        self.assertEqual(metadata.patents_status, "pending")
+        # research.py sets this when no key was derived; assert the field
+        # exists and is writable so the skip is representable at all.
+        metadata.patents_status = "skipped"
+        metadata.notes.append("patents skipped: no search key was derived")
+        self.assertEqual(metadata.patents_status, "skipped")
+        self.assertTrue(any("no search key" in n for n in metadata.notes))
+
+    def test_research_marks_the_skip(self):
+        """Pins the branch rather than the message."""
+        source = (PROJECT_ROOT / "research.py").read_text(encoding="utf-8")
+        self.assertIn('setattr(metadata, status_field, "skipped")', source)
+        self.assertIn("no search key was derived or provided", source)
+
+
 class TestTruncatedJsonIsRecovered(unittest.TestCase):
     """A response cut off mid-value still carries the data before the cut.
 

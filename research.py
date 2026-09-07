@@ -502,11 +502,24 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- primary-source registries -------------------------------------
     # Independent of every other stage: open registry endpoints, no account.
-    for label, runner, arg in (
-        ("exchange filings", pipeline.run_exchange_filings, filings_key),
-        ("patents", pipeline.run_patents, patent_assignee),
+    for label, runner, arg, status_field in (
+        ("exchange filings", pipeline.run_exchange_filings, filings_key,
+         "filings_status"),
+        ("patents", pipeline.run_patents, patent_assignee, "patents_status"),
     ):
-        if exit_code != 0 or not arg:
+        if exit_code != 0:
+            continue
+        if not arg:
+            # A channel with nothing to search on must say so. An AgiBot run
+            # finished with patents_status still "pending", which reads as
+            # unfinished work rather than a channel that was never given a
+            # name to query — the real cause being upstream, in stage 0.
+            setattr(metadata, status_field, "skipped")
+            metadata.notes.append(
+                f"{label} skipped: no search key was derived or provided"
+            )
+            storage.write_metadata(metadata)
+            say(f"  {label} 건너뜀 — 검색 키가 도출되지 않음")
             continue
         try:
             say()

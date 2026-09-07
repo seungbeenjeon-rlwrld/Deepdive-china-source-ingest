@@ -1494,8 +1494,19 @@ class Pipeline:
         # Search engines suggest related queries; those are free new anchors.
         discovered_anchors: list[str] = []
 
+        # Each query runs once per site filter and industry, so the number of
+        # API calls is a multiple of the query count. Saying "6 queries" and
+        # then counting to 12 read like a contradiction, and it is the call
+        # count that spends the monthly quota.
         total = len(selected) * len(sites) * len(industries)
         done = 0
+        if total != len(selected):
+            self._progress(
+                f"      {len(selected)} queries x {len(sites)} site filter(s)"
+                + (f" x {len(industries)} industry filter(s)"
+                   if len(industries) > 1 else "")
+                + f" = {total} searches"
+            )
         for query in selected:
             for site in sites:
                 for industry in industries:
