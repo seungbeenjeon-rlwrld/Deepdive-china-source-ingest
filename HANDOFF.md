@@ -13,15 +13,17 @@
 | git | `git --version` |
 | Claude Code | 딥다이브 단계에서 사용 |
 
-API 키 2개를 **본인 계정으로 발급**해야 함. 다른 사람 키를 공유하지 말 것 —
-무료 한도가 계정당이므로 공유하면 서로 소진시킴.
+발급할 API 키는 **SerpApi 하나뿐**임. LLM 은 Claude Code CLI 가 담당하고 자체
+인증을 쓰므로 키가 없음.
+
+키는 **본인 계정으로 발급**할 것. 무료 한도가 계정당이므로 공유하면 서로 소진시킴.
 
 ---
 
 ## 1. 클론 및 설치
 
 ```bash
-git clone git@github.com:seungbeenjeon-rlwrld/Deepdive-china-source-ingest.git
+git clone https://github.com/seungbeenjeon-rlwrld/Deepdive-china-source-ingest.git
 cd Deepdive-china-source-ingest
 python3 -m venv .venv
 source .venv/bin/activate
@@ -185,37 +187,54 @@ Stage 0 이 필요한 이유는 영어 이름만으로 중국 인덱스를 검�
 
 10~20분 걸림. 이런 순서로 흘러감.
 
+실제 실행 기록(Unitree, 소스 221건 / 본문 568,955자):
+
 ```
 [0/2] Resolving Chinese names...
-      8 search names (6 Chinese), 5 name collision(s)
-      retrieval: 智元机器人
-      reading: 以智能机器创造无限生产力-智元创新(上海)科技股份有限公司
-      injected 24 results from serpapi (4 pages read in full)
+      8 search names (6 Chinese), 3 name collision(s)
+      injected 60 results from serpapi (4 pages read in full)
 [1/2] Discovering company entities...
 ✓ Entity discovery complete
 ✓ Results saved
-  자동 인식 — 거래소 공시: 上纬新材
-  자동 인식 — 특허 출원인: 上海智元新创技术有限公司
+  자동 인식 — 거래소 공시: 宇树科技
+  자동 인식 — 특허 출원인: 杭州宇树科技股份有限公司
 [2/2] Collecting Chinese local sources...
 ✓ Source collection complete
 ✓ Results saved
-[+] Fetching exchange filings for 上纬新材...
-✓ Indexed 20 exchange filings with direct PDF links
+[+] Fetching exchange filings for 宇树科技...
+✓ Indexed 19 exchange filings with direct PDF links
+✓ Extracted 538,087 chars of filing text in 35 sections
+[+] Fetching patents for 杭州宇树科技股份有限公司...
+✓ Indexed 33 of 33 patents
+[+] Searching 4 Chinese local domains for 宇树科技...
+      ccgp.gov.cn: 19
+      tianyancha.com: 19
+      qcc.com: 20
+      aiqicha.baidu.com: 20
+✓ 78 results from Chinese local domains (0 read in full)
+[+] Sweeping structured search over 6 recommended queries...
+✓ Collected 38 structured search results
 
 Research saved to:
-./research/agibot/2026-09-05_120000/
+./research/unitree/2026-09-07_112053/
 
 Done.
 ```
+
+`ccgp.gov.cn` 이 `0 read in full` 인 것은 정상임 — 그 사이트가 `robots.txt` 로
+자동 수집을 금지하고 우리는 그것을 준수함. 낙찰 금액은 색인된 스니펫에 들어 있음.
 
 값을 직접 지정하려면 플래그로 넘길 것. 플래그가 자동 도출을 덮어씀:
 
 ```bash
 python research.py --company "AgiBot" \
-  --official-site "https://www.agibot.com.cn/article/315" \
   --filings "上纬新材" \
   --patents "上海智元新创技术有限公司"
 ```
+
+특허는 출원인 이름을 정확히 맞춰야 함. 사명 변경이 있었으면 구 사명으로도
+돌려볼 것 — 실측(Unitree): `杭州宇树科技股份有限公司` 33건, `杭州宇树科技有限公司`
+135건, `宇树科技` 276건으로 크게 다름.
 
 ### 5-4. 결과 확인
 
@@ -241,7 +260,7 @@ python research.py --resume "research/agibot/2026-09-05_120000" --stage 2
 python research.py --resume "research/agibot/2026-09-05_120000" --stage channels
 ```
 
-`--stage channels` 는 거래소 공시·특허·검색 스윕만 실행하고
+`--stage channels` 는 거래소 공시·특허·중국 로컬 도메인·검색 스윕만 실행하고
 Stage 1·2 는 건드리지 않음. Stage 2 를 의도적으로 다시 만들려면 `--force` 를
 붙일 것.
 
@@ -251,12 +270,25 @@ Stage 1·2 는 건드리지 않음. Stage 2 를 의도적으로 다시 만들려
 
 ### 6-1. 산출물은 그냥 파일임
 
+클론한 디렉터리 아래 `research/{회사}/{실행시각}/` 에 생김. 실측(Unitree):
+
 ```
-research/{회사}/{실행시각}/
+00_INDEX.md                  ← 여기부터 읽을 것. 전체 소스 목차
+metadata.json                각 채널의 성공/실패와 건수
+00_name_resolution.md/.json  중국어 이름 8개 + 동명이인 3개
+01_entity_discovery.md/.json Stage 1 — 회사 실체
+02_sources.md/.json          Stage 2 — 수집 모델 출력
+03_search_sweep.md/.json     Baidu 검색 38건
+06_exchange_filings.md/.json 공시 19건 + 전문 35조각 538,087자
+07_patents.md/.json          특허 33건
+08_local_sources.md/.json    중국 로컬 도메인 78건 (조달·工商)
+raw_sources/source_NNN.md    소스 1건 = 파일 1개 (총 221건)
+raw_*_response.json          API 원본 응답
+logs/run.log                 실행 로그
 ```
 
 Markdown 과 JSON 이라 무엇으로 읽든 상관없음. deepdive 프롬프트가 이 경로를
-읽게 하면 됨.
+읽게 하면 됨. **같은 소스의 `.md` 와 `.json` 을 둘 다 읽지 말 것** — 같은 내용임.
 
 ### 6-2. 함께 넘겨야 하는 것 — 증거 등급 규칙
 

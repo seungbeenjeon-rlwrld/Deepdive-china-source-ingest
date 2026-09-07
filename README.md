@@ -529,7 +529,7 @@ Baidu       → 새로운 정보 발견
 ### 설치
 
 ```bash
-git clone git@github.com:seungbeenjeon-rlwrld/Deepdive-china-source-ingest.git
+git clone https://github.com/seungbeenjeon-rlwrld/Deepdive-china-source-ingest.git
 cd Deepdive-china-source-ingest
 python3 -m venv .venv
 source .venv/bin/activate
