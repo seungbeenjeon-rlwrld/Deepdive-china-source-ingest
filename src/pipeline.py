@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
@@ -48,7 +49,7 @@ from .parsing import (
     parse_source_blocks,
     verify_labels,
 )
-from .parsing import _record_from_citation, _record_from_page
+from .parsing import _is_legal_entity, _record_from_citation, _record_from_page
 from .provider import ProviderError, ResearchProvider
 from .reports import _names_markdown, _records_markdown, _sweep_markdown, index_markdown
 from .storage import (
@@ -441,18 +442,92 @@ class Pipeline:
             )
         return payload
 
-    def run_patents(self, company: str, assignee: str) -> dict[str, Any]:
-        self._progress(f"[+] Fetching patents for {assignee}...")
+    @staticmethod
+    def _is_throttled_failures(fails: list[dict[str, Any]]) -> bool:
+        return any("throttled" in str(f.get("error", "")).lower() for f in fails)
+
+    def run_patents(
+        self, company: str, assignee: str | list[str]
+    ) -> dict[str, Any]:
+        """Index patents across every assignee name the company has filed under.
+
+        A rename splits the record set — Google Patents matches the assignee
+        string as filed — so querying one name loses most of the portfolio.
+        Measured on Unitree: 33 patents under the current
+        杭州宇树科技股份有限公司, 135 under the former 杭州宇树科技有限公司.
+        """
+        assignees = [assignee] if isinstance(assignee, str) else list(assignee)
+        assignees = [a for a in (x.strip() for x in assignees if x) if a]
+        if not assignees:
+            self.metadata.patents_status = "skipped"
+            return {"skipped": "no assignee name available"}
+
+        label = assignees[0] + (f" (+{len(assignees) - 1} more)"
+                                if len(assignees) > 1 else "")
+        self._progress(f"[+] Fetching patents for {label}...")
         self.metadata.patents_status = "running"
         self.storage.write_metadata(self.metadata)
 
         cfg = self.config.registries
-        records, failures, total = PatentCollector(self._get_fetcher()).collect(
-            company, assignee, max_records=int(cfg.get("max_patents", 60))
-        )
+        cap = int(cfg.get("max_patents", 60))
+        collector = PatentCollector(self._get_fetcher())
+        records: list[SourceRecord] = []
+        failures: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        totals: dict[str, Any] = {}
+
+        for position, name in enumerate(assignees):
+            if len(records) >= cap:
+                break
+            if position:
+                # Querying several names multiplies the load on an endpoint
+                # that throttles bursts, so space the queries out.
+                time.sleep(float(cfg.get("patent_query_gap_seconds", 3)))
+            try:
+                found, fails, total = collector.collect(
+                    company, name, max_records=cap - len(records)
+                )
+            except Exception as exc:
+                failures.append({"assignee": name, "error": str(exc)})
+                continue
+            if not found and self._is_throttled_failures(fails):
+                # If the endpoint is throttling, the remaining names will be
+                # throttled too. Three more rounds of retries would only make
+                # it worse and would report the same thing.
+                failures.append({
+                    "assignee": name,
+                    "error": "throttled; remaining assignee names not queried",
+                    "assignees_not_queried": assignees[position + 1:],
+                })
+                self._progress(
+                    "      throttled by Google Patents — "
+                    f"{len(assignees) - position - 1} name(s) not queried"
+                )
+                break
+            totals[name] = total
+            for fail in fails:
+                failures.append({**fail, "assignee": name})
+            fresh = 0
+            for record in found:
+                # The same patent can be filed under both the old and the new
+                # name. Merge on the publication number and note every name it
+                # was found under — that agreement is itself a signal.
+                number = str((record.extra or {}).get("publication_number") or "")
+                if number and number in seen:
+                    continue
+                if number:
+                    seen.add(number)
+                record.extra = {**(record.extra or {}), "found_under": name}
+                records.append(record)
+                fresh += 1
+            self._progress(f"      {name}: {fresh} new (endpoint reports {total})")
+
+        total = sum(v for v in totals.values() if isinstance(v, int)) or None
         payload = {
             "target_company": company,
-            "assignee": assignee,
+            "assignee": assignees[0],
+            "assignees_queried": assignees,
+            "totals_by_assignee": totals,
             "patents_collected": len(records),
             "total_reported_by_endpoint": total,
             "failures": failures,
@@ -460,7 +535,8 @@ class Pipeline:
             "generated_at": utc_now_iso(),
             "endpoint": PATENTS_QUERY_URL,
             "note": (
-                "CNIPA patents by assignee, via Google Patents. Prompt 2 §10 priority 5. "
+                "CNIPA patents by assignee, via Google Patents, across every legal-entity "
+                "name stage 0 found — a rename splits the record set. Prompt 2 §10 priority 5. "
                 "Content is the published abstract as returned, not the full "
                 "specification. This endpoint rate-limits bursts with HTTP 503; a "
                 "throttled run reports a failure rather than an empty result."
@@ -470,7 +546,7 @@ class Pipeline:
             self.storage.save_json(PATENTS_JSON, payload)
         if self.config.output.get("save_markdown", True):
             self.storage.save(PATENTS_MD, _records_markdown(
-                f"Stage 7 — Patents: {assignee}", payload, records))
+                f"Stage 7 — Patents: {label}", payload, records))
         self._persist_records(records)
 
         if failures and not records:
@@ -728,8 +804,8 @@ class Pipeline:
         - patent assignee  -> stage 0's legal-entity name
         - listed entity    -> a candidate name that 巨潮资讯网 actually answers for
         """
-        derived: dict[str, Any] = {"patent_assignee": None, "filings_search_key": None,
-                                   "evidence": {}}
+        derived: dict[str, Any] = {"patent_assignee": None, "patent_assignees": [],
+                                   "filings_search_key": None, "evidence": {}}
         cfg = self.config.research.get("derive_channels") or {}
 
         # 1) Patent assignee: the registered legal entity, not the brand.
@@ -743,10 +819,32 @@ class Pipeline:
         # vehicle, not the operating entity that files patents.
         preferred = [e for e in legal if "有限公司" in e["name"] and "合伙" not in e["name"]]
         chosen = (preferred or legal)
-        if chosen:
-            derived["patent_assignee"] = chosen[0]["name"]
+
+        # One name is not enough. A rename splits the patent record set, and
+        # Google Patents matches the assignee string as filed: measured on
+        # Unitree, 杭州宇树科技股份有限公司 (the current name) returns 33 patents
+        # while 杭州宇树科技有限公司 (the former one) returns 135. Picking either
+        # loses most of the portfolio, and which one stage 0 ranks first is
+        # luck. So query every legal-entity name it found and merge.
+        #
+        # Legal-entity forms only, deliberately. A bare brand name like 宇树科技
+        # returns 276, but an assignee field holds a registered entity, so a
+        # brand-string match may pull in unrelated companies — and that cannot
+        # be verified cheaply. Precision over reach where the corpus is the
+        # thing being protected.
+        assignees: list[str] = []
+        for entry in chosen:
+            name = str(entry.get("name") or "").strip()
+            if name and _is_legal_entity(name) and name not in assignees:
+                assignees.append(name)
+
+        if assignees:
+            derived["patent_assignees"] = assignees
+            # Kept for callers and configs that pass a single name.
+            derived["patent_assignee"] = assignees[0]
             derived["evidence"]["patent_assignee"] = (
-                f"stage 0 legal_entity, confidence={chosen[0].get('confidence')}"
+                f"stage 0 legal_entity names ({len(assignees)}), "
+                f"confidence={chosen[0].get('confidence')}"
             )
 
         # 2) Listed entity. Scraping a name out of prose kept producing sentence

@@ -102,6 +102,9 @@ DEFAULTS: dict[str, Any] = {
         "patent_assignee": None,      # legal entity name, e.g. 上海智元新创技术有限公司
         "max_filings": 60,
         "max_patents": 60,
+        # Patents are queried once per legal-entity name, so several queries
+        # hit an endpoint that throttles bursts. Space them out.
+        "patent_query_gap_seconds": 3,
         # Pull the text out of the primary filings. Off would leave the channel
         # stopping at the PDF link, which no chat-side fetch can decode.
         "extract_filing_text": True,

@@ -608,6 +608,22 @@ def _find_listed_entity(text: str) -> Optional[dict[str, str]]:
     return {"name": name, "code": code, "mentions": str(counts[key])}
 
 
+# Suffixes that mark a registered entity rather than a brand. Google Patents
+# matches the assignee string as filed, so only these are safe to query
+# broadly — a bare brand name can match unrelated companies.
+_LEGAL_ENTITY_SUFFIXES = (
+    "有限公司", "股份有限公司", "有限责任公司", "集团", "研究院", "研究所",
+    "Co., Ltd", "Co.,Ltd", "Corporation", "Inc.", "GmbH", "Limited",
+)
+
+
+def _is_legal_entity(name: str) -> bool:
+    """Is this a registered entity name, not just a brand?"""
+    if "合伙" in name:
+        return False  # a holding vehicle, not the entity that files patents
+    return any(suffix in name for suffix in _LEGAL_ENTITY_SUFFIXES)
+
+
 def _official_host_candidates(text: str) -> list[str]:
     """Hosts in stage 1 output that look like the company's own site.
 

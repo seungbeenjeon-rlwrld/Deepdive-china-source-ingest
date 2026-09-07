@@ -56,6 +56,12 @@ class Harness:
         # test suite issue real Baidu queries — 10 of the user's monthly quota
         # before it was caught. Tests must never touch the network.
         self.config.search_sweep = {**self.config.search_sweep, "provider": None}
+        # No real waiting in tests. The patent channel paces its per-assignee
+        # queries, which added three seconds a test before this was pinned.
+        self.config.registries = {
+            **self.config.registries, "patent_query_gap_seconds": 0,
+        }
+        self.config.local_sources = {**self.config.local_sources, "enabled": False}
         self.config.research = {
             **self.config.research,
             "derive_channels": {"enabled": True, "probe_filings": False},
@@ -720,6 +726,142 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         config = self._config([])
         research.pin_offline(config)
         self.assertEqual(config.search_sweep["provider"], "mock")
+
+
+class TestPatentsCoverEveryAssigneeName(unittest.TestCase):
+    """A rename splits the patent record set; one name loses most of it."""
+
+    NAMES = {
+        "chinese_names": [
+            {"name": "杭州宇树科技股份有限公司", "type": "legal_entity",
+             "confidence": "high"},
+            {"name": "杭州宇树科技有限公司", "type": "legal_entity",
+             "confidence": "high"},
+            {"name": "宇树科技", "type": "brand_name", "confidence": "high"},
+            {"name": "杭州天则合伙企业", "type": "legal_entity",
+             "confidence": "medium"},
+        ],
+    }
+
+    def test_every_legal_entity_name_is_derived(self):
+        h = _derivation_harness()
+        try:
+            d = h.pipeline.derive_channels(self.NAMES, "")
+            self.assertEqual(
+                d["patent_assignees"],
+                ["杭州宇树科技股份有限公司", "杭州宇树科技有限公司"],
+            )
+            # Back-compat for single-name callers and config.
+            self.assertEqual(d["patent_assignee"], "杭州宇树科技股份有限公司")
+        finally:
+            h.cleanup()
+
+    def test_a_bare_brand_name_is_not_queried(self):
+        """宇树科技 returns 276 patents, but a brand string can match
+        unrelated companies and that cannot be verified cheaply."""
+        h = _derivation_harness()
+        try:
+            d = h.pipeline.derive_channels(self.NAMES, "")
+            self.assertNotIn("宇树科技", d["patent_assignees"])
+        finally:
+            h.cleanup()
+
+    def test_a_partnership_is_not_an_assignee(self):
+        from src.parsing import _is_legal_entity
+
+        self.assertFalse(_is_legal_entity("杭州天则合伙企业"))
+        self.assertTrue(_is_legal_entity("杭州宇树科技有限公司"))
+        self.assertFalse(_is_legal_entity("宇树科技"))
+
+    def test_the_same_patent_under_two_names_is_kept_once(self):
+        from src.models import SourceRecord
+
+        h = Harness(MockProvider())
+        try:
+            def patent(number):
+                return SourceRecord(
+                    source_id=f"P_{number}", title=f"专利 {number}",
+                    retrieval_url=f"http://p/{number}",
+                    content_access_status="HIGH_FIDELITY_EXTRACTION",
+                    origin="patent_registry",
+                    extra={"publication_number": number},
+                )
+
+            calls = []
+
+            def collect(company, assignee, *, max_records=60):
+                calls.append(assignee)
+                if assignee == "旧名有限公司":
+                    return [patent("CN1"), patent("CN2")], [], 2
+                return [patent("CN2"), patent("CN3")], [], 2
+
+            import src.pipeline as mod
+            original = mod.PatentCollector
+            mod.PatentCollector = lambda *_a, **_k: type(
+                "C", (), {"collect": staticmethod(collect)}
+            )()
+            try:
+                payload = h.pipeline.run_patents(
+                    "Unitree", ["旧名有限公司", "新名股份有限公司"]
+                )
+            finally:
+                mod.PatentCollector = original
+
+            self.assertEqual(calls, ["旧名有限公司", "新名股份有限公司"])
+            self.assertEqual(payload["patents_collected"], 3)
+            self.assertEqual(payload["assignees_queried"],
+                             ["旧名有限公司", "新名股份有限公司"])
+            found = [s["extra"]["found_under"] for s in payload["sources"]]
+            self.assertEqual(found, ["旧名有限公司", "旧名有限公司",
+                                     "新名股份有限公司"])
+        finally:
+            h.cleanup()
+
+    def test_throttling_stops_the_remaining_names(self):
+        """Three more rounds of retries would report the same thing worse."""
+        h = Harness(MockProvider())
+        try:
+            calls = []
+
+            def collect(company, assignee, *, max_records=60):
+                calls.append(assignee)
+                return [], [{"page": 0, "error": "HTTP 503 (throttled)"}], None
+
+            import src.pipeline as mod
+            original = mod.PatentCollector
+            mod.PatentCollector = lambda *_a, **_k: type(
+                "C", (), {"collect": staticmethod(collect)}
+            )()
+            try:
+                payload = h.pipeline.run_patents("Unitree", ["甲有限公司", "乙有限公司"])
+            finally:
+                mod.PatentCollector = original
+
+            self.assertEqual(calls, ["甲有限公司"])
+            skipped = [f for f in payload["failures"] if f.get("assignees_not_queried")]
+            self.assertEqual(skipped[0]["assignees_not_queried"], ["乙有限公司"])
+            self.assertEqual(h.metadata.patents_status, "failed")
+        finally:
+            h.cleanup()
+
+    def test_a_single_name_string_still_works(self):
+        h = Harness(MockProvider())
+        try:
+            def collect(company, assignee, *, max_records=60):
+                return [], [], 0
+
+            import src.pipeline as mod
+            original = mod.PatentCollector
+            mod.PatentCollector = lambda *_a, **_k: type(
+                "C", (), {"collect": staticmethod(collect)}
+            )()
+            try:
+                payload = h.pipeline.run_patents("Unitree", "某某有限公司")
+            finally:
+                mod.PatentCollector = original
+            self.assertEqual(payload["assignees_queried"], ["某某有限公司"])
+        finally:
+            h.cleanup()
 
 
 class TestFilingCountsAreNotConflated(unittest.TestCase):

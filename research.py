@@ -408,7 +408,9 @@ def main(argv: list[str] | None = None) -> int:
                 if key == "filings_search_key":
                     filings_key = value
                 else:
-                    patent_assignee = value
+                    # Every legal-entity name, not just the first: a rename
+                    # splits the patent record set across names.
+                    patent_assignee = derived.get("patent_assignees") or [value]
             metadata.notes.append(f"channels derived automatically: {derived}")
     except (ProviderError, ValueError, OSError) as exc:
         # Covers provider errors and anything raised before the call (e.g. a

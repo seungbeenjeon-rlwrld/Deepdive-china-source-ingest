@@ -194,7 +194,7 @@ python research.py
 3. Baidu 기반 중국 로컬 소스 검색
 4. 관련 페이지 원문 수집
 5. 거래소 공시 검색 **및 1차 문서 전문 추출**
-6. 특허 출원인 탐색 및 특허 전수 조회
+6. 특허 출원인 탐색 및 특허 전수 조회 (구 사명 포함, 법인명 전부)
 7. 중국 로컬 도메인 조회 (정부조달·工商 등기)
 8. 수집 결과 저장
 
@@ -218,7 +218,9 @@ python research.py
 ✓ Indexed 19 exchange filings with direct PDF links
 ✓ Extracted 538,087 chars of filing text in 35 sections
 [+] Fetching patents for 杭州宇树科技股份有限公司...
-✓ Indexed 33 of 33 patents
+      杭州宇树科技股份有限公司: 33 new (endpoint reports 33)
+      杭州宇树科技有限公司: 128 new (endpoint reports 135)
+✓ Indexed 161 of 168 patents
 [+] Searching 4 Chinese local domains for 宇树科技...
       ccgp.gov.cn: 19
       tianyancha.com: 19
@@ -252,9 +254,10 @@ python research.py --company "AgiBot" \
 
 직접 입력한 값이 자동 도출 결과보다 우선합니다.
 
-> **특허는 출원인 이름에 매우 민감합니다.** 사명 변경이 있었던 기업은 구 사명으로도
-> 실행해 볼 것을 권장합니다. 실측(Unitree):
-> `杭州宇树科技股份有限公司` 33건 / `杭州宇树科技有限公司` 135건 / `宇树科技` 276건.
+> 특허는 출원인 이름에 민감하지만 **수동 지정은 필요하지 않습니다.** 사명 변경으로
+> 기록이 쪼개지는 문제(실측: `杭州宇树科技股份有限公司` 33건 /
+> `杭州宇树科技有限公司` 135건)는 파이프라인이 Stage 0 이 찾은 **법인명 전부를
+> 조회해 합치는 방식**으로 자동 처리합니다.
 
 ---
 
@@ -458,7 +461,7 @@ python research.py \
 | `429 monthly quota`            | SerpApi 무료 한도 소진                      |
 | `Indexed 0 exchange filings`   | 비상장사 또는 상장사명 탐색 실패. `--filings` 직접 지정 |
 | 공시 전문 `no text layer`          | 스캔 이미지 PDF. 링크는 유지되므로 직접 열람           |
-| 특허 건수가 적음                      | 사명 변경 가능성. 구 사명으로 `--patents` 지정      |
+| 특허 `throttled` + 일부 미조회        | Google Patents rate limit. 시간을 두고 `--stage channels` 재실행 |
 | 특허 `503 throttled`             | Google Patents rate limit. 이후 재시도     |
 | 로컬 도메인 `0 read in full`        | 정상. `robots.txt` 준수로 스니펫만 확보          |
 | WeChat source가 `URL_ONLY`      | 정상. 자동 원문 확보 불가                       |
