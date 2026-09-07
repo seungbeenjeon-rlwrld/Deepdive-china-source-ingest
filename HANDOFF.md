@@ -218,9 +218,7 @@ python research.py
 ✓ Indexed 19 exchange filings with direct PDF links
 ✓ Extracted 538,087 chars of filing text in 35 sections
 [+] Fetching patents for 杭州宇树科技股份有限公司...
-      杭州宇树科技股份有限公司: 33 new (endpoint reports 33)
-      杭州宇树科技有限公司: 128 new (endpoint reports 135)
-✓ Indexed 161 of 168 patents
+✓ Indexed 33 of 33 patents
 [+] Searching 4 Chinese local domains for 宇树科技...
       ccgp.gov.cn: 19
       tianyancha.com: 19
@@ -235,6 +233,11 @@ Research saved to:
 
 Done.
 ```
+
+위 기록은 특허 채널이 출원인 이름 하나만 조회하던 시점의 것입니다. 이후 법인명
+전부를 조회하도록 바뀌었으므로 특허 건수는 더 많아집니다(실측 기준 구 사명
+`杭州宇树科技有限公司` 단독으로 135건). 바뀐 뒤의 전체 실행은 Google Patents
+rate limit 때문에 아직 재측정하지 못했습니다.
 
 `ccgp.gov.cn`이 `0 read in full`인 것은 정상입니다. 해당 사이트가 `robots.txt`로
 자동 수집을 금지하고 있고 이를 준수하기 때문입니다. 낙찰 금액은 색인된 스니펫에
