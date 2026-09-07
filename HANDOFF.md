@@ -1,26 +1,33 @@
-# 인수인계 — 처음 쓰는 사람을 위한 전체 절차
+# Deepdive China Source Ingest 사용설명서
 
-클론부터, Claude가 수집된 중국 소스를 기반으로 딥다이브하는 것까지의 전 과정임.
-소요 시간 약 20분(대부분 API 키 발급 대기).
+중국 기업의 **중국 로컬 소스를 자동으로 수집하고, Claude Code가 해당 자료를 기반으로 Deep Dive 분석을 수행할 수 있도록 준비하는 전체 과정**입니다.
+
+전체 흐름은 다음과 같습니다.
+
+**Repository Clone → 환경 설정 → API Key 등록 → 기업명 입력 → 중국 로컬 소스 수집 → Claude Deep Dive**
 
 ---
 
-## 0. 사전 준비
+# 0. 사전 준비
 
-| 필요한 것 | 확인 |
-| --- | --- |
+아래 환경이 필요합니다.
+
+| 항목             | 확인                  |
+| -------------- | ------------------- |
 | Python 3.10 이상 | `python3 --version` |
-| git | `git --version` |
-| Claude Code | 딥다이브 단계에서 사용 |
+| Git            | `git --version`     |
+| Claude Code    | 파이프라인 실행 및 Deep Dive 단계에서 사용 |
+| SerpApi Key    | Baidu 검색에 사용        |
 
-발급할 API 키는 **SerpApi 하나뿐**임. LLM 은 Claude Code CLI 가 담당하고 자체
-인증을 쓰므로 키가 없음.
+> SerpApi Key는 반드시 **본인 계정으로 발급**하여 사용합니다.
+> 무료 한도가 계정 단위이므로 다른 사람과 Key를 공유하지 않는 것을 권장합니다.
 
-키는 **본인 계정으로 발급**할 것. 무료 한도가 계정당이므로 공유하면 서로 소진시킴.
+발급이 필요한 API Key는 **SerpApi 하나뿐**입니다. LLM 처리는 Claude Code CLI가
+담당하며 자체 인증을 사용하므로 별도 Key가 없습니다.
 
 ---
 
-## 1. 클론 및 설치
+# 1. Repository 설치
 
 ```bash
 git clone https://github.com/seungbeenjeon-rlwrld/Deepdive-china-source-ingest.git
@@ -36,103 +43,117 @@ pip install -r requirements.txt
 python -m unittest discover tests
 ```
 
-`OK (211 tests)`가 나오면 정상임. 이 테스트는 네트워크·API 키가 필요 없음.
+아래처럼 나오면 정상입니다.
+
+```text
+OK (211 tests)
+```
+
+이 테스트는 네트워크와 API Key가 필요하지 않습니다.
 
 ---
 
-## 2. Claude Code CLI 설치 — LLM 담당, API 키 불필요
+# 2. Claude Code 설치 및 로그인
+
+이 파이프라인의 LLM 처리는 **Claude Code CLI**가 담당합니다.
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash
 ```
 
-설치 후 PATH 에 추가할 것 (설치 스크립트가 경고를 냄):
+PATH 경고가 나오면:
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
-처음이면 한 번 실행해 로그인할 것. 이후 파이프라인이 그 인증을 그대로 씀.
+처음 한 번 실행해 로그인합니다.
 
 ```bash
 claude
 ```
 
-폴더 신뢰 확인이 뜨면 `Yes, I trust this folder` 를 선택하고, 로그인 안내가 나오면
-브라우저로 인증한 뒤 `/exit` 로 나올 것.
+* Folder trust → `Yes, I trust this folder`
+* 브라우저 로그인 진행
+* 완료 후 `/exit`
 
-확인:
+설치 확인:
 
 ```bash
 claude --version
 ```
 
-> **유의** — 이 방식은 대화형 Claude Code 와 **같은 사용량 한도를 공유함**.
-> 회사를 여러 개 연속으로 돌리면 본인 작업이 느려질 수 있음. 그럴 때는 잠시 뒤
-> 다시 실행할 것.
+> Claude Code와 동일한 사용량 한도를 공유합니다.
+> 여러 회사를 연속 실행하면 usage limit에 걸릴 수 있습니다.
 
-## 3. API 키 발급 — SerpApi 하나
+---
 
-Baidu 검색용임. 발급받을 키는 이것뿐임.
+# 3. SerpApi Key 발급
 
-| 키 | 하는 일 | 없으면 |
-| --- | --- | --- |
-| `SERPAPI_KEY` | **Baidu 검색** | 실행이 시작되지 않음 |
+SerpApi는 **Baidu 검색**에 사용됩니다.
 
-**선택 사항이 아님.** Baidu 검색이 Stage 0 의 이름 해석에 근거를 주고, 그 결과로
-나온 중국어 등기명이 공시·특허 채널의 검색어가 됨. 즉 이 키가 없으면 영어 회사명
-하나로 시작하는 경로 자체가 끊어짐.
+### 발급
 
-전에는 키가 없으면 조용히 claude-cli 로 폴백해서 검색 주입 0건 상태로 완주했음.
-결과가 거의 비는데 성공처럼 보여서, 지금은 **시작 시점에 멈추고 이유를 출력함.**
+1. 회원가입
+   https://serpapi.com/users/sign_up
+2. API Key 확인
+   https://serpapi.com/manage-api-key
 
-### 3-1. SerpApi (Baidu 검색)
+무료 플랜 기준 월 **250 requests**이며, 회사 한 곳당 대략 **15~25 requests**가
+사용됩니다. 실측(Unitree 전체 실행) 기준 14 requests였습니다.
 
-1. <https://serpapi.com/users/sign_up> — 이메일 가입, 카드 불필요
-2. <https://serpapi.com/manage-api-key> 에서 키 복사
-3. **월 250건 무료.** 회사 1개 수집에 약 10~30건 사용 → 월 8~25개 회사
+Key가 없으면 실행이 시작되지 않고 안내가 출력됩니다. Baidu 검색이 중국어 회사명
+탐색의 근거가 되고, 그 결과가 공시·특허 채널의 검색어가 되기 때문입니다.
 
-키가 여러 개 있으면 `.env` 에 나란히 넣을 것. 한 키가 소진되면 자동으로 다음
-키로 넘어감:
+---
 
-```
-SERPAPI_KEY=키1
-SERPAPI_KEY_2=키2
-SERPAPI_KEY_3=키3
-```
-
-번호는 `SERPAPI_KEY_2`, `_3`, `_4` … 순서로 읽고 **첫 공백에서 멈춤.**
-`_2` 를 비우고 `_3` 만 넣으면 `_3` 은 무시됨.
-
-> 무료 한도는 계정당임. 한 사람이 계정을 여러 개 만들어 한도를 넘기는 것은
-> SerpApi 약관과 충돌할 수 있음.
-
-### 3-2. `.env` 작성
+## `.env` 설정
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` 를 열어 한 줄만 채울 것:
+`.env` 파일에:
 
+```text
+SERPAPI_KEY=본인_API_KEY
 ```
-SERPAPI_KEY=여기에
+
+를 입력합니다.
+
+여러 Key를 사용할 경우:
+
+```text
+SERPAPI_KEY=키1
+SERPAPI_KEY_2=키2
+SERPAPI_KEY_3=키3
 ```
 
-LLM 은 Claude CLI 가 담당하므로 다른 키는 필요 없음.
+처럼 추가할 수 있습니다. 한 Key의 월 한도가 소진되면 자동으로 다음 Key를
+사용합니다. 번호는 순서대로 읽고 **첫 공백에서 멈추므로**, `_2` 없이 `_3`만
+넣으면 `_3`은 무시됩니다.
 
-## 4. 동작 확인 (키 소모 없음)
+---
 
-먼저 mock으로 파이프라인이 도는지 확인:
+# 4. 설치 확인
+
+실제 API 사용 없이 mock으로 파이프라인을 확인할 수 있습니다.
 
 ```bash
 python research.py --company "TestCorp" --provider mock
 ```
 
-`research/testcorp/{시각}/` 이 생기고 파일들이 채워지면 정상임. 이건 합성 데이터이므로
-결과 내용은 의미 없음 — **배관만 확인하는 용도**임.
+정상 실행되면:
 
-확인 후 지울 것:
+```text
+research/testcorp/{실행시각}/
+```
+
+폴더가 생성됩니다.
+
+`--provider mock`은 완전히 오프라인으로 동작하므로 SerpApi 요청을 소모하지
+않습니다. 테스트 결과는 합성 데이터이므로 확인 후 삭제합니다.
 
 ```bash
 rm -rf research/testcorp
@@ -140,56 +161,48 @@ rm -rf research/testcorp
 
 ---
 
-## 5. 첫 실제 수집
+# 5. 실제 기업 조사
 
-### 5-1. 회사명 하나만 넣으면 됨
-
-**영어(글로벌) 회사명 하나로 충분함.** 중국어 이름을 알 필요 없음.
+실행:
 
 ```bash
 python research.py
 ```
 
-```
+회사명을 입력합니다.
+
+```text
 ========================================
  Deepdive — China Source Ingest
 ========================================
 
 조사할 회사명을 입력하세요.
-> AgiBot
+> Unitree
 ```
 
-그 뒤로는 아무것도 묻지 않음.
+**영문 회사명 하나만 입력하면 됩니다.**
+중국어 브랜드명, 법인명, 특허 출원인명, 상장사명 등은 파이프라인이 자동으로 탐색합니다.
 
-### 5-2. 나머지는 파이프라인이 알아냄
+---
 
-수집 범위를 결정하는 값들을 **묻지 않고 도출함.**
+## 자동으로 수행되는 작업
 
-| 값 | 어디서 나오는지 |
-| --- | --- |
-| 중국어 검색명 | Stage 0 이 영어 이름을 전개 |
-| 특허 출원인 법인명 | Stage 0 의 `legal_entity` 이름 |
-| 거래소 공시용 상장사명 | 후보 이름을 巨潮资讯网 에 조회해 공시가 나오는 것 |
+파이프라인은 입력된 회사명을 기준으로:
 
-Stage 0 이 필요한 이유는 영어 이름만으로 중국 인덱스를 검색하면 **동명이인
-회사가 섞여 나오기 때문**임. 실측: Baidu 에서 `AgiBot` 을 검색하면 수술로봇
-회사 `AGIBOT敏捷机器人` 이 함께 반환됨. Stage 0 이 그런 회사를 `collisions` 로
-분리해 Stage 1 에 "합치지 말라"고 전달함.
+1. 중국어 회사명 및 법인명 탐색
+2. 동명이인 회사 분리
+3. Baidu 기반 중국 로컬 소스 검색
+4. 관련 페이지 원문 수집
+5. 거래소 공시 검색 **및 1차 문서 전문 추출**
+6. 특허 출원인 탐색 및 특허 전수 조회
+7. 중국 로컬 도메인 조회 (정부조달·工商 등기)
+8. 수집 결과 저장
 
-상장사명은 추측하지 않고 **등기소에 실제로 조회해서** 정함. 중국어에는 띄어쓰기가
-없어 문장에서 이름을 뽑으면 `客户集中度` 의 `户集中度` 같은 조각이 회사명으로
-잡혔기 때문임. 조회 자체는 무료라 후보를 몇 개 시도해도 비용이 없음.
+을 자동으로 수행합니다.
 
-도출에 실패하면 그 채널만 건너뛰고 나머지는 정상 진행됨. 도출 근거는
-`metadata.json` 의 `notes` 와 `00_name_resolution.md` 에 기록됨.
+실제 실행 기록입니다. 소요 시간 약 20분, 소스 221건, 본문 568,955자.
 
-### 5-3. 실행 화면
-
-10~20분 걸림. 이런 순서로 흘러감.
-
-실제 실행 기록(Unitree, 소스 221건 / 본문 568,955자):
-
-```
+```text
 [0/2] Resolving Chinese names...
       8 search names (6 Chinese), 3 name collision(s)
       injected 60 results from serpapi (4 pages read in full)
@@ -221,10 +234,15 @@ Research saved to:
 Done.
 ```
 
-`ccgp.gov.cn` 이 `0 read in full` 인 것은 정상임 — 그 사이트가 `robots.txt` 로
-자동 수집을 금지하고 우리는 그것을 준수함. 낙찰 금액은 색인된 스니펫에 들어 있음.
+`ccgp.gov.cn`이 `0 read in full`인 것은 정상입니다. 해당 사이트가 `robots.txt`로
+자동 수집을 금지하고 있고 이를 준수하기 때문입니다. 낙찰 금액은 색인된 스니펫에
+포함되어 있습니다.
 
-값을 직접 지정하려면 플래그로 넘길 것. 플래그가 자동 도출을 덮어씀:
+---
+
+# 6. 자동 도출값 직접 지정
+
+자동 탐색 결과가 정확하지 않은 경우 직접 지정할 수 있습니다.
 
 ```bash
 python research.py --company "AgiBot" \
@@ -232,163 +250,256 @@ python research.py --company "AgiBot" \
   --patents "上海智元新创技术有限公司"
 ```
 
-특허는 출원인 이름을 정확히 맞춰야 함. 사명 변경이 있었으면 구 사명으로도
-돌려볼 것 — 실측(Unitree): `杭州宇树科技股份有限公司` 33건, `杭州宇树科技有限公司`
-135건, `宇树科技` 276건으로 크게 다름.
+직접 입력한 값이 자동 도출 결과보다 우선합니다.
 
-### 5-4. 결과 확인
+> **특허는 출원인 이름에 매우 민감합니다.** 사명 변경이 있었던 기업은 구 사명으로도
+> 실행해 볼 것을 권장합니다. 실측(Unitree):
+> `杭州宇树科技股份有限公司` 33건 / `杭州宇树科技有限公司` 135건 / `宇树科技` 276건.
 
-```bash
-ls research/agibot/*/
-cat research/agibot/*/metadata.json
+---
+
+# 7. 결과 확인
+
+수집 결과는:
+
+```text
+research/{회사}/{실행시각}/
 ```
 
-`metadata.json` 의 `*_status` 가 `completed` 인지 확인할 것. `failed` 가 있으면
-`stage2_error` 등에 사유가 있음.
+에 저장됩니다. 실측 기준 구성은 다음과 같습니다.
 
-**중간에 실패해도 이미 수집된 것은 남음.**
-
-Stage 2 가 실패했을 때만 다시 실행하려면:
-
-```bash
-python research.py --resume "research/agibot/2026-09-05_120000" --stage 2
-```
-
-**이미 완료된 Stage 2 는 덮어쓰지 않도록 막혀 있음.** 수집 채널만 추가하려면:
-
-```bash
-python research.py --resume "research/agibot/2026-09-05_120000" --stage channels
-```
-
-`--stage channels` 는 거래소 공시·특허·중국 로컬 도메인·검색 스윕만 실행하고
-Stage 1·2 는 건드리지 않음. Stage 2 를 의도적으로 다시 만들려면 `--force` 를
-붙일 것.
-
-## 6. 코퍼스를 다운스트림에 넘기기
-
-이 도구의 일은 코퍼스를 만드는 데서 끝남. 분석은 각자의 deepdive 파이프라인이 함.
-
-### 6-1. 산출물은 그냥 파일임
-
-클론한 디렉터리 아래 `research/{회사}/{실행시각}/` 에 생김. 실측(Unitree):
-
-```
-00_INDEX.md                  ← 여기부터 읽을 것. 전체 소스 목차
-metadata.json                각 채널의 성공/실패와 건수
+```text
+00_INDEX.md                  ← 여기부터 확인. 전체 source 목차
+metadata.json                채널별 성공/실패 및 건수
 00_name_resolution.md/.json  중국어 이름 8개 + 동명이인 3개
 01_entity_discovery.md/.json Stage 1 — 회사 실체
-02_sources.md/.json          Stage 2 — 수집 모델 출력
+02_sources.md/.json          Stage 2 — 수집 결과
 03_search_sweep.md/.json     Baidu 검색 38건
 06_exchange_filings.md/.json 공시 19건 + 전문 35조각 538,087자
 07_patents.md/.json          특허 33건
 08_local_sources.md/.json    중국 로컬 도메인 78건 (조달·工商)
-raw_sources/source_NNN.md    소스 1건 = 파일 1개 (총 221건)
-raw_*_response.json          API 원본 응답
+raw_sources/source_NNN.md    source 1건 = 파일 1개 (총 221건)
 logs/run.log                 실행 로그
 ```
 
-Markdown 과 JSON 이라 무엇으로 읽든 상관없음. deepdive 프롬프트가 이 경로를
-읽게 하면 됨. **같은 소스의 `.md` 와 `.json` 을 둘 다 읽지 말 것** — 같은 내용임.
+상태 확인:
 
-### 6-2. 함께 넘겨야 하는 것 — 증거 등급 규칙
-
-각 소스에 `content_access_status` 가 붙어 있음. **이걸 모르는 채로 분석하면
-검색 스니펫을 원문처럼 다뤄 없는 사실을 만들어냄.**
-
-| 값 | 분석에서 쓸 수 있는 방식 |
-| --- | --- |
-| `VERBATIM_FULL_TEXT` | 인용 가능. 숫자·날짜·발언 그대로 |
-| `VERBATIM_PARTIAL_TEXT` | 확보된 범위 내에서 인용 가능 |
-| `TRANSCRIPT_EXTRACTED` | 자막 출처임을 밝히고 인용 |
-| `HIGH_FIDELITY_EXTRACTION` | 숫자·이름은 신뢰. 원문 인용으로 쓰지 말 것 |
-| `SEARCH_SNIPPET_ONLY` | 단서로만. 근거로 단독 사용 금지 |
-| `URL_ONLY` | 내용 추측 금지. "해당 자료 존재"까지만 |
-
-전체 규칙은 저장소 루트의 [CLAUDE.md](CLAUDE.md) 에 있음. 가장 간단한 전달
-방법은 deepdive 프롬프트 앞에 한 줄을 붙이는 것임:
-
+```bash
+cat research/unitree/*/metadata.json
 ```
+
+`*_status`가:
+
+```text
+completed
+```
+
+이면 정상입니다. `completed_with_errors`는 일부 항목만 실패한 경우이며, 사유는
+해당 채널의 `.json` 파일 `failures` 항목에 기록됩니다. 예를 들어 스캔 이미지로만
+된 공시는 텍스트 레이어가 없어 추출에 실패하며, 링크는 유지됩니다.
+
+중간에 실패하더라도 이미 수집된 자료는 유지됩니다.
+
+---
+
+# 8. 실패한 단계 재실행
+
+전체를 처음부터 다시 실행하면 SerpApi 요청을 다시 소모합니다. 이미 성공한
+단계는 그대로 두고 실패한 부분만 다시 실행하는 것이 좋습니다.
+
+Stage 2만 다시 실행:
+
+```bash
+python research.py \
+  --resume "research/unitree/2026-09-07_112053" \
+  --stage 2
+```
+
+공시·특허·로컬 도메인 등 수집 채널만 다시 실행:
+
+```bash
+python research.py \
+  --resume "research/unitree/2026-09-07_112053" \
+  --stage channels
+```
+
+이미 완료된 Stage 2는 실수로 덮어쓰지 않도록 막혀 있습니다. 의도적으로 다시
+만들려면 `--force`를 추가합니다.
+
+---
+
+# 9. Claude Deep Dive에서 사용하는 방법
+
+수집이 끝나면 해당 폴더를 Claude Code가 읽도록 하면 됩니다.
+
+먼저:
+
+```text
+00_INDEX.md
+```
+
+를 확인합니다.
+
+이 파일에 전체 source가 정리되어 있으므로, **필요한 자료만 골라서 읽는 방식**을 권장합니다.
+전체 corpus를 한 번에 읽으면 context가 너무 커질 수 있습니다.
+
+---
+
+## Evidence Grade 확인
+
+각 source에는:
+
+```text
+content_access_status
+```
+
+가 붙습니다.
+
+이 값에 따라 자료를 사용할 수 있는 수준이 다릅니다.
+
+| 값                          | 사용 방법                   |
+| -------------------------- | ----------------------- |
+| `VERBATIM_FULL_TEXT`       | 원문 인용 및 사실 근거로 사용 가능    |
+| `VERBATIM_PARTIAL_TEXT`    | 확보된 범위 내에서 사용           |
+| `TRANSCRIPT_EXTRACTED`     | 자막 출처임을 밝히고 사용          |
+| `HIGH_FIDELITY_EXTRACTION` | 사실 확인에 사용 가능, 직접 인용은 지양 |
+| `SEARCH_SNIPPET_ONLY`      | 탐색 단서로만 사용              |
+| `URL_ONLY`                 | 해당 자료의 존재만 확인 가능        |
+
+공시 전문은 `HIGH_FIDELITY_EXTRACTION`입니다. 문장은 원문 그대로이지만 추출
+과정에서 표 구조가 평면화되므로, 숫자와 이름은 신뢰하되 레이아웃은 신뢰하지
+않는 것이 원칙입니다.
+
+전체 규칙은:
+
+```text
+CLAUDE.md
+```
+
+에 정의되어 있습니다.
+
+Claude Code를 repository 안에서 실행하면 자동으로 적용됩니다.
+별도 Deep Dive prompt에서는 다음 한 줄을 추가하면 됩니다.
+
+```text
 분석 전에 이 저장소의 CLAUDE.md 를 읽고 그 증거 등급 규칙을 따를 것.
 ```
 
-Claude Code 를 이 저장소 디렉터리에서 열면 `CLAUDE.md` 가 자동 적용되므로
-그 한 줄도 필요 없음.
+---
 
-### 6-3. 읽을 때 알아둘 것
+# 10. 분석 시 권장 순서
 
-- **`00_INDEX.md` 를 먼저 열 것.** 전체 소스가 한 줄씩 정리된 목차임. 여기서
-  필요한 것만 골라 해당 파일을 여는 것이 기본 사용법임
-- **전체를 한 번에 읽지 말 것.** 회사 1개 코퍼스가 컨텍스트 창을 넘김. 목차로
-  좁히고, 그래도 못 찾으면 `grep` 을 쓸 것
-- **같은 소스의 `.json` 과 `.md` 를 둘 다 읽지 말 것.** 같은 내용임
-- 목차에 `dup` 으로 표시된 것은 다른 소스와 사실상 같은 자료임. 건너뛰어도 됨
-- 회사명이 CJK 면 경로를 인용부호로 감쌀 것 — `"research/智元机器人/..."`
-- `00_name_resolution.md` 의 `collisions` 에 **동명이인 회사**가 정리되어 있음.
-  이름이 헷갈리면 여기를 먼저 볼 것
-- 코퍼스에는 **해결하지 않은 모순**이 의도적으로 남아 있음(융자 라운드 9회/10회
-  등). 한쪽을 고르지 말고 병기할 것
-- `02_sources.md` 끝의 `REMAINING_SOURCE_GAPS` 와 각 `.json` 의 `failures` 에
-  무엇을 못 얻었는지 기록되어 있음
+```text
+00_INDEX.md
+↓
+필요한 source 선별
+↓
+해당 Markdown 또는 JSON 확인
+↓
+부족한 경우 grep 검색
+↓
+Deep Dive 분석
+```
 
-### 6-4. 자료가 부족할 때
+주의사항:
 
-deepdive 중 부족한 부분이 나오면 직접 웹검색으로 메우기보다 파이프라인으로
-재수집하는 편이 좋음. 그래야 증거 등급이 붙고 다음 사람도 같은 자료를 봄.
+* 같은 source의 `.md`와 `.json`을 둘 다 읽을 필요 없음
+* `dup` 표시 source는 중복 자료이므로 건너뛰어도 됨
+* 동명이인이 의심되면 `00_name_resolution.md` 확인
+* 자료 간 숫자나 내용이 다르면 임의로 하나를 고르지 말고 병기
+* 수집하지 못한 자료는 `REMAINING_SOURCE_GAPS` 및 `failures` 확인
+* 공시 전문은 `extra.section_heading`으로 장을 고르고 `extra.page_start`로
+  원본 PDF 페이지를 확인
+
+---
+
+# 11. 자료가 부족할 때
+
+Deep Dive 중 자료가 부족하면 가능하면 임의 웹검색보다 **파이프라인을 다시 실행하는 것을 권장**합니다.
 
 ```bash
 python research.py --company "AgiBot"
 ```
 
-기존 실행을 덮어쓰지 않고 새 타임스탬프 폴더가 생김.
+기존 결과를 덮어쓰지 않고 새로운 timestamp 폴더가 생성됩니다.
+이렇게 하면 모든 자료에 동일한 evidence grade와 provenance가 유지됩니다.
 
-## 7. 새 회사 추가
+---
 
-### 자동 도출을 고정하고 싶으면
+# 12. Public Repository 사용 시 주의
 
-보통은 회사명만 넣으면 되고 아래는 필요 없음. 자동 도출 결과가 계속 틀릴 때만
-`config.yaml` 에 박아두면 됨:
-
-```yaml
-registries:
-  filings_search_key: "상장사명"
-  patent_assignee: "중국어 법인명"
-```
-
-### 조사 대상 목록을 저장소에 남기고 싶지 않으면
-
-이 저장소는 **public**임. 대상 회사 목록은 "우리가 누구를 보고 있는지"의 목록이므로,
-공개하고 싶지 않으면 분리할 것:
+이 repository는 public입니다.
+조사 대상 기업 목록을 공개하고 싶지 않다면 local config를 사용합니다.
 
 ```bash
-cp config.yaml config.local.yaml   # 실제 타겟은 여기에
+cp config.yaml config.local.yaml
 echo "config.local.yaml" >> .gitignore
-python research.py --company "..." --config config.local.yaml
+```
+
+실행:
+
+```bash
+python research.py \
+  --company "..." \
+  --config config.local.yaml
 ```
 
 ---
 
-## 8. 자주 겪는 문제
+# 13. 자주 발생하는 문제
 
-| 증상 | 원인 / 대응 |
-| --- | --- |
-| `the Claude CLI ('claude') was not found on PATH` | CLI 미설치. 2절의 설치 명령 실행 |
-| `claude cli failed ... Not logged in` | `claude` 를 한 번 실행해 로그인할 것 |
-| `claude cli failed ... usage limit` | 구독 한도 소진. 시간을 두고 재실행 |
-| `claude cli failed ... ENOTFOUND` | 네트워크·DNS 일시 오류. 재실행하면 됨 |
-| `Indexed 0 exchange filings` | 비상장이거나 상장사명 도출 실패. `--filings "상장사명"` 으로 직접 지정 가능 |
-| `429 monthly quota` (SerpApi) | 월 250건 소진. <https://serpapi.com/dashboard> 확인 |
-| 공시 0건인데 회사는 상장사 | cninfo 504(일시적). 재시도 로직이 있으나 계속되면 잠시 후 다시 |
-| 특허 0건 + `503 throttled` | Google Patents 스로틀. 시간 두고 재시도. 안정성 필요 시 EPO OPS 검토 |
-| `Baidu hasn't returned any results` | 정상임. Baidu는 장문 다중키워드 쿼리에 빈 결과를 반환함 |
-| 위챗 소스가 전부 `URL_ONLY` | 정상임. 자동 취득 불가이며 우회하지 않음. 브라우저로 직접 열 것 |
-| CJK 경로 glob 오류 | 경로를 인용부호로 감쌀 것: `"research/智元机器人/..."` |
+| 증상                             | 해결                                    |
+| ------------------------------ | ------------------------------------- |
+| `No SerpApi key found`         | `.env`에 `SERPAPI_KEY` 등록              |
+| `claude was not found on PATH` | Claude CLI 설치 및 PATH 설정               |
+| `Not logged in`                | `claude` 실행 후 로그인                     |
+| `usage limit`                  | Claude Code 사용량 제한. 이후 재실행            |
+| `ENOTFOUND`                    | 네트워크/DNS 오류. 재실행                      |
+| `429 monthly quota`            | SerpApi 무료 한도 소진                      |
+| `Indexed 0 exchange filings`   | 비상장사 또는 상장사명 탐색 실패. `--filings` 직접 지정 |
+| 공시 전문 `no text layer`          | 스캔 이미지 PDF. 링크는 유지되므로 직접 열람           |
+| 특허 건수가 적음                      | 사명 변경 가능성. 구 사명으로 `--patents` 지정      |
+| 특허 `503 throttled`             | Google Patents rate limit. 이후 재시도     |
+| 로컬 도메인 `0 read in full`        | 정상. `robots.txt` 준수로 스니펫만 확보          |
+| WeChat source가 `URL_ONLY`      | 정상. 자동 원문 확보 불가                       |
+| 중국어 경로 오류                      | 경로를 `"research/智元机器人/..."`처럼 따옴표로 감싸기 |
 
 ---
 
-## 9. 더 읽을 것
+# Quick Start
 
-| 문서 | 내용 |
-| --- | --- |
-| [README.md](README.md) | 시스템이 하는 일, 왜 필요한가, 파이프라인 개요 |
-| [CLAUDE.md](CLAUDE.md) | **코퍼스 증거 등급 규칙.** deepdive 파이프라인에 그대로 전달할 것 |
-| `prompts/` | 수집 단계용 프롬프트 2개. **분석용이 아님** |
+처음 사용하는 경우 아래 순서만 따라가면 됩니다.
+
+```text
+1. Repository Clone
+↓
+2. Python 환경 설치
+↓
+3. Claude Code 설치 및 로그인
+↓
+4. SerpApi Key 발급
+↓
+5. .env 설정
+↓
+6. Mock Test
+↓
+7. python research.py
+↓
+8. 영문 회사명 입력
+↓
+9. 자동 중국 로컬 소스 수집
+↓
+10. research/{company}/{timestamp}/ 확인
+↓
+11. 00_INDEX.md 확인
+↓
+12. Claude Code로 Deep Dive
+```
+
+핵심적으로 기억할 것은 세 가지입니다.
+
+**1. 회사명은 영어 이름 하나만 입력하면 됩니다.**
+
+**2. 분석 전 `CLAUDE.md`의 Evidence Grade 규칙을 반드시 따릅니다.**
+
+**3. 자료가 부족하면 가능하면 파이프라인을 다시 실행해 동일한 방식으로 근거를 축적합니다.**
