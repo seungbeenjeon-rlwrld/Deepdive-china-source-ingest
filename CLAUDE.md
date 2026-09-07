@@ -200,7 +200,7 @@ python research.py --resume research/智元机器人/2026-09-04_034201 --stage 2
 
 ## 6. 코드를 수정할 때
 
-- 테스트를 먼저 확인할 것: `python -m unittest discover tests` (242개)
+- 테스트를 먼저 확인할 것: `python -m unittest discover tests` (244개)
 - 새 provider는 `ResearchProvider` 서브클래스 + `build_provider()` 등록.
   등록을 빼먹으면 CLI 선택지와 어긋나므로 `TestEveryAdvertisedProviderBuilds`
   가 잡아냄 (실제로 `claude-cli` 분기가 이렇게 사라진 적 있음)

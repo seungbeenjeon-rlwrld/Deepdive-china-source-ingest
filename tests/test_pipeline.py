@@ -728,6 +728,65 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         self.assertEqual(config.search_sweep["provider"], "mock")
 
 
+class TestNameResolutionFailsLoudly(unittest.TestCase):
+    """Stage 0 failing is survivable; hiding it is not.
+
+    A full AgiBot run took this path. The early returns wrote no file, printed
+    no progress line and set no counts, so the operator saw
+    "[0/2] Resolving Chinese names..." and then stage 1. Downstream ran in
+    English: the registry domains were searched for "AgiBot" and dropped 59 of
+    66 hits, and the patent channel never ran for want of a legal entity. The
+    raw model output was discarded, so the parse failure was undiagnosable.
+    """
+
+    class Unparseable(MockProvider):
+        def run_research(self, prompt, *, label=""):
+            from src.provider import ResearchResponse
+
+            if label == "stage0":
+                return ResearchResponse(
+                    text="죄송합니다, 회사를 찾을 수 없습니다.",
+                    provider="stub", model="stub", raw={},
+                )
+            return super().run_research(prompt, label=label)
+
+    def test_the_failure_is_saved_and_announced(self):
+        h = Harness(self.Unparseable())
+        try:
+            printed = []
+            h.pipeline._progress = printed.append
+            result = h.pipeline.resolve_names("AgiBot")
+
+            self.assertIn("not valid JSON", result["error"])
+            self.assertEqual(result["search_names"], ["AgiBot"])
+            # The operator has to see it.
+            self.assertTrue(any("name resolution failed" in p for p in printed),
+                            printed)
+            self.assertTrue(any("patent channel will be skipped" in p
+                                for p in printed), printed)
+            # And it has to be on disk, with the model's own words kept.
+            saved = json.loads(
+                (h.run_dir / "00_name_resolution.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(saved["search_names"], ["AgiBot"])
+            self.assertIn("찾을 수 없습니다", saved["raw_text"])
+            self.assertEqual(h.metadata.name_resolution_status, "failed")
+        finally:
+            h.cleanup()
+
+    def test_a_failed_resolution_yields_no_patent_assignee(self):
+        """So the skip is a consequence of the recorded failure, not a mystery."""
+        h = Harness(self.Unparseable())
+        try:
+            h.pipeline._progress = lambda *_a: None
+            names = h.pipeline.resolve_names("AgiBot")
+            derived = h.pipeline.derive_channels(names, "")
+            self.assertEqual(derived["patent_assignees"], [])
+            self.assertIsNone(derived["patent_assignee"])
+        finally:
+            h.cleanup()
+
+
 class TestListedEntityNeedsAControlRelationship(unittest.TestCase):
     """Being named near a stock code is not being the company's listing.
 

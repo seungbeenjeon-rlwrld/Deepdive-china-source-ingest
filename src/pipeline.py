@@ -361,6 +361,51 @@ class Pipeline:
         )
         return payload
 
+    def _name_resolution_failed(
+        self, company: str, why: str, *, raw_text: Optional[str]
+    ) -> dict[str, Any]:
+        """Degrade to the typed name, loudly, and keep the evidence.
+
+        A full AgiBot run hit this path and it was nearly invisible: the two
+        early returns wrote no file, printed no progress line and recorded no
+        counts, so the operator saw "[0/2] Resolving Chinese names..." followed
+        by stage 1 and nothing else. Downstream quietly ran in English — the
+        registry domains were searched for "AgiBot" and dropped 59 of 66 hits
+        as off-topic, and the patent channel never ran at all because no legal
+        entity had been derived. The raw model output was discarded too, so the
+        parse failure could not be diagnosed afterwards.
+        """
+        result: dict[str, Any] = {
+            "error": why,
+            "input_name": company,
+            "search_names": [company],
+            "chinese_names": [],
+            "collisions": [],
+            "raw_text": raw_text,
+            "generated_at": utc_now_iso(),
+            "note": (
+                "Name resolution failed, so this run has no Chinese names. "
+                "Chinese indexes are keyed on Chinese strings, so the registry "
+                "and procurement channels will find little and the patent "
+                "channel is skipped for want of a legal-entity name. Re-run, or "
+                "pass --filings / --patents by hand."
+            ),
+        }
+        self._progress(f"      ! name resolution failed: {why}")
+        self._progress(
+            "      ! continuing with the typed name only — Chinese-index recall "
+            "will be poor and the patent channel will be skipped"
+        )
+        if self.config.output.get("save_json", True):
+            self.storage.save_json(NAMES_JSON, result)
+        if self.config.output.get("save_markdown", True):
+            self.storage.save(NAMES_MD, _names_markdown(company, result))
+        self.metadata.counts["search_names"] = 1
+        self.metadata.counts["name_collisions"] = 0
+        self.metadata.name_resolution_status = "failed"
+        self.storage.write_metadata(self.metadata)
+        return result
+
     def _best_chinese_name(self, names_meta: dict[str, Any]) -> Optional[str]:
         """The shortest Chinese search name — the one indexes actually key on.
 
@@ -791,17 +836,18 @@ class Pipeline:
             # Never fatal: fall back to the raw name and say so.
             self.log.warning("name resolution failed (%s) — using the raw name", exc)
             self.metadata.notes.append(f"name resolution failed: {exc}")
-            return {"error": str(exc), "search_names": [company]}
+            return self._name_resolution_failed(
+                company, f"provider error: {exc}", raw_text=None
+            )
 
         parsed = _parse_json_object(response.text)
         if parsed is None:
             self.log.warning("name resolution returned unparseable output — using the raw name")
             self.metadata.notes.append("name resolution output was not valid JSON")
-            return {
-                "error": "output was not valid JSON",
-                "raw_text": response.text,
-                "search_names": [company],
-            }
+            return self._name_resolution_failed(
+                company, "the model's output was not valid JSON",
+                raw_text=response.text,
+            )
 
         names = [n for n in (parsed.get("search_names") or []) if isinstance(n, str) and n.strip()]
         # Always keep what the user typed: it is the one name we know they meant.
@@ -842,6 +888,9 @@ class Pipeline:
 
         self.metadata.counts["search_names"] = len(result["search_names"])
         self.metadata.counts["name_collisions"] = len(parsed.get("collisions") or [])
+        self.metadata.name_resolution_status = (
+            "completed" if chinese else "completed_without_chinese_names"
+        )
         self.storage.write_metadata(self.metadata)
         return result
 
