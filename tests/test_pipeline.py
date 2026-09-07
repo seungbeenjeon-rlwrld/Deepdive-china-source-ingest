@@ -873,6 +873,45 @@ class TestFilingDraftPreference(unittest.TestCase):
         self.assertEqual(attempted, ["宇树科技首次公开发行股票并在科创板上市招股意向书"])
 
 
+class TestFilingCountsAreNotConflated(unittest.TestCase):
+    """19 filings plus 35 text sections is not "54 filings"."""
+
+    def test_sections_are_counted_separately_from_filings(self):
+        from src.models import SourceRecord
+
+        h = Harness(MockProvider())
+        try:
+            filing = SourceRecord(source_id="F1", title="公司章程",
+                                  retrieval_url="http://x/a.PDF",
+                                  content_access_status="URL_ONLY",
+                                  origin="exchange_filing_registry")
+            section = SourceRecord(source_id="F1_TEXT_01", title="公司章程 — 第一节",
+                                   retrieval_url="http://x/a.PDF#page=1",
+                                   content_access_status="HIGH_FIDELITY_EXTRACTION",
+                                   content="条文" * 100,
+                                   origin="exchange_filing_text")
+
+            def collect(*_a, **_k):
+                return [filing, section], []
+
+            import src.pipeline as mod
+            original = mod.ExchangeFilingCollector
+            mod.ExchangeFilingCollector = lambda *_a, **_k: type(
+                "C", (), {"collect": staticmethod(collect)}
+            )()
+            try:
+                payload = h.pipeline.run_exchange_filings("Unitree", "宇树科技")
+            finally:
+                mod.ExchangeFilingCollector = original
+
+            self.assertEqual(payload["filings_collected"], 1)
+            self.assertEqual(payload["filing_text_sections"], 1)
+            self.assertEqual(payload["filing_text_chars"], 200)
+            self.assertEqual(h.metadata.counts["exchange_filings"], 1)
+        finally:
+            h.cleanup()
+
+
 class TestPdfSectioning(unittest.TestCase):
     """A 382-page filing is a dozen documents to a reader, not one."""
 

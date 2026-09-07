@@ -607,7 +607,7 @@ registries:
 python -m unittest discover tests -v
 ```
 
-228개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
+229개, 표준 라이브러리만 사용하며 네트워크·API 키 불필요함.
 
 ---
 

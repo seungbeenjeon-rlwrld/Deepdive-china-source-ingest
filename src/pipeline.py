@@ -235,10 +235,18 @@ class Pipeline:
             max_pdf_bytes=int(cfg.get("max_pdf_mb", 40)) * 1_048_576,
             max_section_chars=int(cfg.get("max_section_chars", 40000)),
         )
+        # Two kinds of record come back: one per filing, plus one per section
+        # of the primary documents whose text was extracted. Reporting the sum
+        # as a filing count would overstate how many filings exist.
+        texts = [r for r in records if r.origin == "exchange_filing_text"]
+        filings = [r for r in records if r.origin != "exchange_filing_text"]
+        text_chars = sum(len(r.content or "") for r in texts)
         payload = {
             "target_company": company,
             "search_key": search_key,
-            "filings_collected": len(records),
+            "filings_collected": len(filings),
+            "filing_text_sections": len(texts),
+            "filing_text_chars": text_chars,
             "failures": failures,
             "sources": [r.to_dict() for r in records],
             "generated_at": utc_now_iso(),
@@ -246,8 +254,11 @@ class Pipeline:
             "note": (
                 "Exchange/regulatory disclosures from 巨潮资讯网. Prompt 2 §10 priority 1 — "
                 "these carry legal liability and settle what media only paraphrase. Each "
-                "record keeps a DIRECT_DOCUMENT_URL to the PDF; the filing text is not "
-                "extracted (prompt 2 §14: return the document link, do not rebuild it)."
+                "record keeps a DIRECT_DOCUMENT_URL to the PDF. Primary documents "
+                "(招股说明书, 公司章程, 上市公告书 …) additionally have their text "
+                "extracted section by section, because no chat-side fetch decodes a "
+                "cninfo PDF; those records carry origin exchange_filing_text and "
+                "HIGH_FIDELITY_EXTRACTION."
             ),
         }
         if self.config.output.get("save_json", True):
@@ -258,9 +269,16 @@ class Pipeline:
         self._persist_records(records)
 
         self.metadata.filings_status = "completed" if not failures else "completed_with_errors"
-        self.metadata.counts["exchange_filings"] = len(records)
+        self.metadata.counts["exchange_filings"] = len(filings)
+        self.metadata.counts["filing_text_sections"] = len(texts)
+        self.metadata.counts["filing_text_chars"] = text_chars
         self.storage.write_metadata(self.metadata)
-        self._progress(f"✓ Indexed {len(records)} exchange filings with direct PDF links")
+        self._progress(f"✓ Indexed {len(filings)} exchange filings with direct PDF links")
+        if texts:
+            self._progress(
+                f"✓ Extracted {text_chars:,} chars of filing text "
+                f"in {len(texts)} sections"
+            )
         return payload
 
     def run_patents(self, company: str, assignee: str) -> dict[str, Any]:
