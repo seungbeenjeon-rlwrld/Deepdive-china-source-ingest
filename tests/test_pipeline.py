@@ -728,6 +728,71 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         self.assertEqual(config.search_sweep["provider"], "mock")
 
 
+class TestTruncatedJsonIsRecovered(unittest.TestCase):
+    """A response cut off mid-value still carries the data before the cut.
+
+    Measured on AgiBot: stage 0 emitted canonical_english, chinese_names,
+    english_variants, search_names and collisions in full, then was truncated
+    inside the trailing `note` string. Brace count 12 vs 11. The whole object
+    was discarded for a missing brace, so the run had no Chinese names, no
+    patent assignee and no collision list — and stage 1 was then fed pages
+    about AGIBOT敏捷机器人, the surgical-robot company on that collision list.
+    """
+
+    TRUNCATED = (
+        '{\n  "canonical_english": "AgiBot",\n'
+        '  "chinese_names": [\n'
+        '    {"name": "智元机器人", "type": "brand", "confidence": "high"},\n'
+        '    {"name": "上海智元新创技术有限公司", "type": "legal_entity",'
+        ' "confidence": "high"}\n  ],\n'
+        '  "search_names": ["智元机器人", "上海智元新创技术有限公司"],\n'
+        '  "collisions": [{"name": "敏捷AGIBOT", "note": "手术机器人企业"}],\n'
+        '  "note": "高置信部分：中文品牌名，低置信部分需以工商登记'
+    )
+
+    def test_the_names_survive_the_truncation(self):
+        from src.parsing import _parse_json_object
+
+        parsed = _parse_json_object(self.TRUNCATED)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["search_names"],
+                         ["智元机器人", "上海智元新创技术有限公司"])
+        self.assertEqual(len(parsed["collisions"]), 1)
+        self.assertEqual(
+            [e["name"] for e in parsed["chinese_names"]
+             if e.get("type") == "legal_entity"],
+            ["上海智元新创技术有限公司"],
+        )
+
+    def test_repair_invents_nothing(self):
+        """Only closers are added; the dropped value does not reappear."""
+        from src.parsing import _parse_json_object
+
+        parsed = _parse_json_object(self.TRUNCATED)
+        self.assertNotIn("note", parsed)
+
+    def test_prose_is_still_a_failure(self):
+        from src.parsing import _parse_json_object
+
+        for text in ("죄송합니다, 회사를 찾을 수 없습니다.",
+                     "", "{", "그 회사에 대한 정보가 없습니다 {아마도}"):
+            self.assertIsNone(_parse_json_object(text), text)
+
+    def test_well_formed_and_fenced_json_still_parse(self):
+        from src.parsing import _parse_json_object
+
+        self.assertEqual(
+            _parse_json_object('{"search_names": ["宇树科技"]}')["search_names"],
+            ["宇树科技"],
+        )
+        self.assertEqual(
+            _parse_json_object(
+                '설명입니다\n```json\n{"search_names": ["宇树科技"]}\n```'
+            )["search_names"],
+            ["宇树科技"],
+        )
+
+
 class TestNameResolutionFailsLoudly(unittest.TestCase):
     """Stage 0 failing is survivable; hiding it is not.
 

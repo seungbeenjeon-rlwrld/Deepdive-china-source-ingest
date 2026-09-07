@@ -561,6 +561,84 @@ def _parse_json_object(text: str) -> Optional[dict[str, Any]]:
             continue
         if isinstance(parsed, dict):
             return parsed
+
+    # Last resort: the response was cut off mid-value. Measured on AgiBot, the
+    # model emitted canonical_english, chinese_names, english_variants,
+    # search_names and collisions in full and was truncated inside the trailing
+    # `note` string — every name we needed was present and the whole object was
+    # thrown away for a missing brace. Repair closes the open string and the
+    # open brackets; it never invents content.
+    repaired = _repair_truncated_json(text)
+    if repaired is not None:
+        return repaired
+    return None
+
+
+def _repair_truncated_json(text: str) -> Optional[dict[str, Any]]:
+    """Parse a JSON object whose tail was cut off.
+
+    Scans for the last complete key/value pair, drops the incomplete one, and
+    closes whatever is still open. Returns None unless the result parses to a
+    dict, so a genuinely unusable response still fails.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    body = text[start:]
+
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    # Positions, outside any string, where a value has just been completed.
+    safe: list[int] = []
+    for index, ch in enumerate(body):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            safe.append(index + 1)
+        elif ch == ",":
+            safe.append(index)
+
+    for cut in reversed(safe):
+        head = body[:cut].rstrip().rstrip(",")
+        # Recompute what is still open at the cut.
+        depth: list[str] = []
+        s_in = s_esc = False
+        for ch in head:
+            if s_in:
+                if s_esc:
+                    s_esc = False
+                elif ch == "\\":
+                    s_esc = True
+                elif ch == '"':
+                    s_in = False
+                continue
+            if ch == '"':
+                s_in = True
+            elif ch in "{[":
+                depth.append("}" if ch == "{" else "]")
+            elif ch in "}]" and depth:
+                depth.pop()
+        if s_in:
+            continue
+        try:
+            parsed = json.loads(head + "".join(reversed(depth)))
+        except (ValueError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
     return None
 
 
