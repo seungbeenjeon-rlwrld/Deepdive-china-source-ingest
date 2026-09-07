@@ -267,6 +267,33 @@ def _cninfo_date(millis) -> Optional[str]:
         return None
 
 
+# Filings worth pulling the text out of. These are the primary documents — the
+# ones a chat window can find a link to but not read: WebFetch returns "raw PDF
+# binary stream" for a 6MB prospectus and for a 114KB announcement alike, so
+# size is not the discriminator, PDF-ness is.
+#
+# 提示性公告 is excluded on purpose: it is a one-paragraph pointer saying the
+# real document has been published, so extracting it adds a file and no facts.
+FILING_TEXT_PATTERNS = (
+    "招股说明书", "招股意向书", "上市公告书", "公司章程", "年度报告",
+    "半年度报告", "审计报告", "财务报表", "募集说明书", "法律意见",
+    "问询函", "回复", "注册资本", "工商变更", "重大资产", "关联交易",
+)
+FILING_TEXT_EXCLUDE = ("提示性公告", "摘要")
+
+# 招股意向书 is the draft of 招股说明书 and reads almost identically. Taking both
+# would double the largest document in the corpus for no new facts, so the
+# draft is only read when the final was never filed.
+_DRAFT, _FINAL = "招股意向书", "招股说明书"
+
+
+def wants_filing_text(title: str) -> bool:
+    title = title or ""
+    if any(skip in title for skip in FILING_TEXT_EXCLUDE):
+        return False
+    return any(pattern in title for pattern in FILING_TEXT_PATTERNS)
+
+
 class ExchangeFilingCollector:
     """Exchange/regulatory disclosures from 巨潮资讯网 (cninfo).
 
@@ -288,6 +315,9 @@ class ExchangeFilingCollector:
         *,
         max_records: int = 60,
         start_index: int = 1,
+        extract_text: bool = False,
+        max_pdf_bytes: int = 40 * 1_048_576,
+        max_section_chars: int = 40_000,
     ) -> tuple[list[SourceRecord], list[dict]]:
         import requests
 
@@ -394,7 +424,143 @@ class ExchangeFilingCollector:
             if len(records) >= max_records:
                 break
 
+        if extract_text:
+            extra_records, extract_failures = self._extract_texts(
+                records, company,
+                max_pdf_bytes=max_pdf_bytes,
+                max_section_chars=max_section_chars,
+            )
+            records.extend(extra_records)
+            failures.extend(extract_failures)
+
         return records, failures
+
+    def _extract_texts(
+        self,
+        filings: list[SourceRecord],
+        company: str,
+        *,
+        max_pdf_bytes: int,
+        max_section_chars: int,
+    ) -> tuple[list[SourceRecord], list[dict]]:
+        """Read the primary filings and save their text section by section.
+
+        The registry channel used to stop at the PDF link, which for a reader
+        is the same as not having the document: measured, WebFetch cannot
+        decode a cninfo PDF at any size. Meanwhile the prospectus holds the
+        registered capital, the legal representative, the affiliate network and
+        the named competitor set — the layer a web search answers by pointing
+        at 国家企业信用信息公示系统.
+        """
+        import requests
+
+        from .pdf_extract import extract_sections
+
+        have_final = any(
+            _FINAL in (f.title or "") and wants_filing_text(f.title or "")
+            for f in filings
+        )
+
+        out: list[SourceRecord] = []
+        failures: list[dict] = []
+        for filing in filings:
+            title = filing.title or ""
+            if not wants_filing_text(title):
+                continue
+            if _DRAFT in title and have_final:
+                self.log.info("skipping %s: the final %s was filed", _DRAFT, _FINAL)
+                continue
+            url = filing.canonical_url or filing.retrieval_url or ""
+            if not url:
+                continue
+            try:
+                response = requests.get(
+                    url, timeout=90, stream=True,
+                    headers={"User-Agent": self.fetcher.policy.user_agent},
+                )
+                response.raise_for_status()
+                data = response.content
+            except Exception as exc:
+                failures.append({"stage": "filing_text", "title": title,
+                                 "url": url, "error": str(exc)})
+                continue
+
+            if len(data) > max_pdf_bytes:
+                failures.append({
+                    "stage": "filing_text", "title": title, "url": url,
+                    "error": f"{len(data) / 1_048_576:.1f}MB over the "
+                             f"{max_pdf_bytes / 1_048_576:.0f}MB limit",
+                })
+                continue
+
+            result = extract_sections(data, max_section_chars=max_section_chars)
+            if result.error:
+                failures.append({"stage": "filing_text", "title": title,
+                                 "url": url, "error": result.error})
+                continue
+
+            self.log.info(
+                "extracted %s: %d pages, %d chars, %d section(s)",
+                title[:30], result.page_count, result.char_count,
+                len(result.sections),
+            )
+            for number, section in enumerate(result.sections, start=1):
+                out.append(self._section_record(
+                    filing, company, section, number, len(result.sections), url
+                ))
+        return out, failures
+
+    def _section_record(
+        self, filing: SourceRecord, company: str, section, number: int,
+        total: int, pdf_url: str,
+    ) -> SourceRecord:
+        part = f" ({section.part}/{section.of_parts})" if section.of_parts > 1 else ""
+        # A distinct URL per section, so the corpus deduper — which collapses
+        # records sharing a URL — keeps them apart, and so a reader can jump
+        # straight to the pages the text came from.
+        section_url = f"{pdf_url}#page={section.page_start}"
+        record = SourceRecord(
+            source_id=f"{filing.source_id}_TEXT_{number:02d}",
+            title=f"{filing.title} — {section.heading}{part}",
+            publisher=filing.publisher,
+            publication_date=filing.publication_date,
+            source_platform=filing.source_platform,
+            source_type=filing.source_type,
+            target_company=company,
+            matched_entity=filing.matched_entity,
+            discovery_query=filing.discovery_query,
+            retrieval_url=section_url,
+            canonical_url=section_url,
+            url_type="DIRECT_DOCUMENT_URL",
+            reaccess_status="VERIFIED_REOPENABLE",
+            # Not VERBATIM_FULL_TEXT: extraction preserves the wording but
+            # flattens tables and carries running headers into the body, so
+            # numbers and names are trustworthy while layout is not.
+            content_access_status="HIGH_FIDELITY_EXTRACTION",
+            content=section.text,
+            origin="exchange_filing_text",
+            extra={
+                **{k: v for k, v in filing.extra.items()
+                   if k in ("sec_code", "sec_name", "announcement_id", "org_id")},
+                "part_of": filing.source_id,
+                "section_heading": section.heading,
+                "section_part": section.part,
+                "section_of_parts": section.of_parts,
+                "page_start": section.page_start,
+                "page_end": section.page_end,
+                "pdf_url": pdf_url,
+                "extraction_tool": "pypdf",
+                "source_priority": (
+                    "1 — Government / Regulatory / Exchange Disclosure (prompt 2 §10)"
+                ),
+                "note": (
+                    "Text extracted from the filing PDF, which no chat-side fetch "
+                    "decodes. Wording is the document's own; tables are flattened."
+                ),
+            },
+        )
+        record.derived = {**classify_url(pdf_url), "content_chars": len(section.text)}
+        return record
 
 
 class PatentCollector:

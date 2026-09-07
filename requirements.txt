@@ -13,3 +13,7 @@ PyYAML>=6.0
 # HTML parsing for article-body extraction (official newsroom crawl and repost
 # resolution). No JS execution and no browser automation.
 beautifulsoup4>=4.12.0
+
+# Reads the text out of exchange-filing PDFs. Without it the registry channel
+# stops at a link that no chat-side fetch can decode.
+pypdf>=4.0

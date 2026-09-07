@@ -791,6 +791,169 @@ class TestGatedHosts(unittest.TestCase):
             self.assertFalse(is_gated(url))
 
 
+class TestFilingTextSelection(unittest.TestCase):
+    """Which filings are worth reading, and which are just pointers."""
+
+    def test_primary_documents_are_selected(self):
+        from src.collectors import wants_filing_text
+
+        for title in ("宇树科技首次公开发行股票并在科创板上市招股说明书",
+                      "公司章程",
+                      "关于变更注册资本、公司类型及修订《公司章程》并办理工商变更登记的公告",
+                      "2025年年度报告"):
+            self.assertTrue(wants_filing_text(title), title)
+
+    def test_the_draft_prospectus_yields_to_the_final_one(self):
+        """招股意向书 and 招股说明书 read almost identically."""
+        from src.collectors import wants_filing_text
+
+        # Both match on their own; the pipeline drops the draft when the final
+        # is present, which TestFilingDraftPreference covers.
+        self.assertTrue(wants_filing_text("宇树科技首次公开发行股票并在科创板上市招股意向书"))
+
+    def test_pointer_announcements_are_skipped(self):
+        """提示性公告 is one paragraph saying the real document exists."""
+        from src.collectors import wants_filing_text
+
+        for title in ("宇树科技首次公开发行股票并在科创板上市招股说明书提示性公告",
+                      "招股说明书摘要",
+                      "网上发行申购情况及中签率公告"):
+            self.assertFalse(wants_filing_text(title), title)
+
+
+class TestFilingDraftPreference(unittest.TestCase):
+    """Taking both prospectus versions doubles the corpus for no new facts."""
+
+    def _collector(self):
+        from src.collectors import ExchangeFilingCollector
+
+        class StubFetcher:
+            class policy:
+                user_agent = "test"
+
+        return ExchangeFilingCollector(StubFetcher())
+
+    def _filing(self, title):
+        from src.models import SourceRecord
+
+        return SourceRecord(source_id="F1", title=title,
+                            retrieval_url="http://x/a.PDF",
+                            canonical_url="http://x/a.PDF",
+                            content_access_status="URL_ONLY")
+
+    def _titles_attempted(self, titles):
+        """Which filings the collector tried to download.
+
+        Downloads are stubbed to fail, so every attempt lands in `failures`
+        and the selection decision is what the test sees.
+        """
+        collector = self._collector()
+
+        def refuse(*_args, **_kwargs):
+            raise RuntimeError("download disabled in tests")
+
+        with fake_requests(get=refuse):
+            _, failures = collector._extract_texts(
+                [self._filing(t) for t in titles], "Unitree",
+                max_pdf_bytes=1, max_section_chars=100,
+            )
+        return [f["title"] for f in failures]
+
+    def test_draft_is_skipped_when_the_final_exists(self):
+        attempted = self._titles_attempted([
+            "宇树科技首次公开发行股票并在科创板上市招股意向书",
+            "宇树科技首次公开发行股票并在科创板上市招股说明书",
+        ])
+        self.assertEqual(attempted, ["宇树科技首次公开发行股票并在科创板上市招股说明书"])
+
+    def test_draft_is_read_when_no_final_was_filed(self):
+        attempted = self._titles_attempted([
+            "宇树科技首次公开发行股票并在科创板上市招股意向书",
+        ])
+        self.assertEqual(attempted, ["宇树科技首次公开发行股票并在科创板上市招股意向书"])
+
+
+class TestPdfSectioning(unittest.TestCase):
+    """A 382-page filing is a dozen documents to a reader, not one."""
+
+    def _pdf(self, pages):
+        """Smallest PDF a parser will accept, one text block per page."""
+        import io
+        import zlib
+
+        objects = []
+        kids = " ".join(f"{4 + i * 2} 0 R" for i in range(len(pages)))
+        objects.append("<< /Type /Catalog /Pages 2 0 R >>")
+        objects.append(
+            f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>"
+        )
+        objects.append("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+        streams = []
+        for text in pages:
+            body = "BT /F1 12 Tf 40 700 Td ("
+            body += text.replace("(", "").replace(")", "")
+            body += ") Tj ET"
+            streams.append(body)
+        for index, body in enumerate(streams):
+            objects.append(
+                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                f"/Resources << /Font << /F1 3 0 R >> >> "
+                f"/Contents {5 + index * 2} 0 R >>"
+            )
+            objects.append(f"<< /Length {len(body)} >>\nstream\n{body}\nendstream")
+        out = io.StringIO()
+        out.write("%PDF-1.4\n")
+        offsets = []
+        for number, obj in enumerate(objects, start=1):
+            offsets.append(out.tell())
+            out.write(f"{number} 0 obj\n{obj}\nendobj\n")
+        start = out.tell()
+        out.write(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n")
+        for offset in offsets:
+            out.write(f"{offset:010d} 00000 n \n")
+        out.write(
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{start}\n%%EOF\n"
+        )
+        return out.getvalue().encode("latin-1")
+
+    def test_a_scanned_filing_says_so_instead_of_looking_empty(self):
+        from src.pdf_extract import extract_sections
+
+        result = extract_sections(self._pdf(["x", "y"]))
+        self.assertIn("no text layer", result.error or "")
+        self.assertEqual(result.sections, [])
+
+    def test_a_broken_pdf_reports_rather_than_raises(self):
+        from src.pdf_extract import extract_sections
+
+        result = extract_sections(b"not a pdf at all")
+        self.assertTrue(result.error)
+        self.assertEqual(result.sections, [])
+
+    def test_oversized_sections_split_on_paragraphs(self):
+        from src.pdf_extract import Section, _chunk
+
+        text = "\n".join(["段落内容" * 50] * 60)
+        parts = _chunk(Section("第一节 释义", text, 1, 9), max_section_chars=5_000)
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(all(len(p.text) <= 5_000 for p in parts))
+        self.assertEqual([p.part for p in parts], list(range(1, len(parts) + 1)))
+        self.assertTrue(all(p.of_parts == len(parts) for p in parts))
+        # Nothing may be dropped on the way through.
+        self.assertEqual("".join(p.text.replace("\n", "") for p in parts),
+                         text.replace("\n", ""))
+
+    def test_cross_references_are_not_mistaken_for_chapter_headings(self):
+        from src.pdf_extract import _heading_pages
+
+        pages = [
+            '详见本招股说明书“第五节 业务与技术”之“四、（二）主要产品”。' * 3,
+            "第五节  业务与技术\n本节介绍公司主营业务。",
+        ]
+        self.assertEqual(_heading_pages(pages), [(1, "第五节 业务与技术")])
+
+
 class TestChromeStripping(unittest.TestCase):
     """Page furniture must not be filed as article text."""
 

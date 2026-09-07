@@ -229,7 +229,11 @@ class Pipeline:
 
         cfg = self.config.registries
         records, failures = ExchangeFilingCollector(self._get_fetcher()).collect(
-            company, search_key, max_records=int(cfg.get("max_filings", 60))
+            company, search_key,
+            max_records=int(cfg.get("max_filings", 60)),
+            extract_text=bool(cfg.get("extract_filing_text", True)),
+            max_pdf_bytes=int(cfg.get("max_pdf_mb", 40)) * 1_048_576,
+            max_section_chars=int(cfg.get("max_section_chars", 40000)),
         )
         payload = {
             "target_company": company,

@@ -122,9 +122,15 @@ derived:
 
 동일한 사실에 대해 여러 소스가 있으면 아래 순서로 우선함. `extra.source_priority`에 명시된 경우가 많음.
 
+공시 전문을 읽을 때 — `extra.section_heading`으로 장을 고르고, `extra.page_start`/
+`page_end`로 원본 PDF 페이지를 확인할 수 있음. `extra.part_of`가 같은 조각들은
+한 문서에서 나온 것임. 표는 추출 과정에서 평면화되므로 숫자·이름은 신뢰하되
+레이아웃은 신뢰하지 말 것(`HIGH_FIDELITY_EXTRACTION`).
+
 | 순위 | 소스 | 코퍼스 내 위치 |
 | --- | --- | --- |
-| 1 | 거래소·정부 공시 | `06_exchange_filings.json`, `origin: exchange_filing_registry` |
+| 1 | 거래소 공시 **전문** | `origin: exchange_filing_text` — 공시 PDF에서 추출한 본문. 장(節)별로 갈려 있음 |
+| 1 | 거래소·정부 공시 (링크) | `06_exchange_filings.json`, `origin: exchange_filing_registry` |
 | 2 | 특허·논문 | `07_patents.json`, `origin: patent_registry` |
 | 3 | 고품질 산업·경제 매체 | `origin: provider_search` 중 언론사 도메인 |
 | 4 | 재게시본 | `05_reposts.json`, `origin: repost_resolution` |

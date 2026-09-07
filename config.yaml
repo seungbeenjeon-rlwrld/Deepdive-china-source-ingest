@@ -119,6 +119,13 @@ registries:
   patent_assignee: null         # legal entity, e.g. 上海智元新创技术有限公司
   max_filings: 60
   max_patents: 60
+  # Read the primary filings, do not just link them. Measured: WebFetch returns
+  # "raw PDF binary stream" for a cninfo PDF at 6MB and at 114KB alike, so a
+  # bare link leaves the downstream reader with nothing. Extracted text is
+  # split by chapter (第N节) and capped per file so a reader opens one part.
+  extract_filing_text: true
+  max_pdf_mb: 40
+  max_section_chars: 40000
 
 # Second evidence channel: structured search over the queries stage 1
 # recommended. SearchPro on Tencent, /web_search on Z.ai. Both honour

@@ -133,6 +133,11 @@ DEFAULTS: dict[str, Any] = {
         "patent_assignee": None,      # legal entity name, e.g. 上海智元新创技术有限公司
         "max_filings": 60,
         "max_patents": 60,
+        # Pull the text out of the primary filings. Off would leave the channel
+        # stopping at the PDF link, which no chat-side fetch can decode.
+        "extract_filing_text": True,
+        "max_pdf_mb": 40,
+        "max_section_chars": 40000,
     },
     # Second evidence channel: structured search over the queries stage 1
     # recommended (SearchPro on Tencent, /web_search on Z.ai).
