@@ -728,6 +728,56 @@ class TestSearchKeyIsRequired(unittest.TestCase):
         self.assertEqual(config.search_sweep["provider"], "mock")
 
 
+class TestListedEntityNeedsAControlRelationship(unittest.TestCase):
+    """Being named near a stock code is not being the company's listing.
+
+    A full AgiBot run derived 麦格米特(002851) as the filings key — a
+    power-electronics supplier. It passed the issuer check afterwards, because
+    the filings it returned really are 麦格米特's; the error was choosing the
+    key, not attributing within it. Stage 1 had discussed 麦格米特(002851),
+    富临精工(300432), 均胜电子 and 长盈精密, all suppliers or JV partners, and
+    most-mentioned-wins picked the supplier.
+    """
+
+    def test_a_takeover_is_accepted(self):
+        from src.parsing import _find_listed_entity
+
+        for text in ("智元机器人取得上纬新材（688585.SH）控制权，持股63.62%。",
+                     "上海智元恒岳要约收购上纬新材（688585.SH）"):
+            found = _find_listed_entity(text)
+            self.assertIsNotNone(found, text)
+            self.assertEqual(found["name"], "上纬新材")
+            self.assertEqual(found["code"], "688585")
+
+    def test_a_supplier_is_rejected(self):
+        from src.parsing import _find_listed_entity
+
+        self.assertIsNone(_find_listed_entity(
+            "麦格米特(002851)出资30万持股10%，负责机器人电源"))
+
+    def test_a_joint_venture_partner_is_rejected(self):
+        from src.parsing import _find_listed_entity
+
+        self.assertIsNone(_find_listed_entity(
+            "富临精工(300432)与智元各持股20%，智元下数千万元订单"))
+
+    def test_a_neighbouring_stake_description_does_not_leak(self):
+        """控股 and 实控 were tried as control words and had to be removed:
+        they describe any stake, and in stage 1's tables they sit next to
+        unrelated entities."""
+        from src.parsing import _find_listed_entity
+
+        self.assertIsNone(_find_listed_entity(
+            "智元通过天津一品智能实控90%；麦格米特(002851)持股10%"))
+
+    def test_no_candidate_means_no_key(self):
+        """Skipping the channel costs less than another company's filings."""
+        from src.parsing import _find_listed_entity
+
+        self.assertIsNone(_find_listed_entity(
+            "该公司为非上市企业，合作方包括均胜电子与长盈精密。"))
+
+
 class TestPatentsMustBeAssignedToTheTarget(unittest.TestCase):
     """The query was q=, a full-text search, not assignee=.
 
@@ -2234,11 +2284,25 @@ class TestChannelDerivation(unittest.TestCase):
         finally:
             h.cleanup()
 
-    def test_most_mentioned_stock_code_wins(self):
+    def test_a_customer_never_competes_with_the_controlled_entity(self):
+        """This asserted most-mentioned-wins, which is how a full AgiBot run
+        settled on the supplier 麦格米特. Mentions only break ties among
+        candidates that carry control language in the first place."""
         h = self._pipeline()
         try:
-            text = ("富临精工（300432.SZ）은 고객. "
-                    "上纬新材（688585.SH）… 上纬新材（688585.SH）… 上纬新材（688585.SH）")
+            text = ("富临精工（300432.SZ）은 고객이며 각 20% 지분. "
+                    "智元取得上纬新材（688585.SH）控制权。")
+            d = h.pipeline.derive_channels({}, text)
+            self.assertEqual(d["filings_search_key"], "上纬新材")
+        finally:
+            h.cleanup()
+
+    def test_mentions_break_ties_between_controlled_entities(self):
+        h = self._pipeline()
+        try:
+            text = ("智元收购甲公司（600001.SH）。"
+                    "智元取得上纬新材（688585.SH）控制权。"
+                    "智元取得上纬新材（688585.SH）控制权。")
             d = h.pipeline.derive_channels({}, text)
             self.assertEqual(d["filings_search_key"], "上纬新材")
         finally:

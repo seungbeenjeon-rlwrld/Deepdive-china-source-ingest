@@ -564,13 +564,49 @@ def _parse_json_object(text: str) -> Optional[dict[str, Any]]:
     return None
 
 
+# The listed entity must be one the company CONTROLS, not merely one it is
+# mentioned alongside. Measured on AgiBot: stage 1 discussed 麦格米特(002851),
+# 富临精工(300432), 均胜电子 and 长盈精密 — every one a supplier or joint-venture
+# partner — and the most-mentioned-wins rule picked 麦格米特, whose own filings
+# then passed the issuer check because they really are 麦格米特's. The corpus
+# would have carried a power-electronics company's disclosures as AgiBot's.
+# Chinese puts the verb before its object — 智元取得上纬新材（688585.SH）控制权,
+# 要约收购上纬新材（688585.SH） — so the two positions that carry meaning are a
+# short span BEFORE the name and a shorter one AFTER the code. A symmetric
+# window was tried at 120 and 60 characters and leaked both times: stage 1
+# packs unrelated relationships into neighbouring table cells, so 麦格米特 kept
+# qualifying on a takeover described for a different entity.
+_CONTROL_VERBS = (
+    "取得", "收购", "要约", "入主", "举牌", "借壳", "重大资产重组",
+    "成为控股股东", "成为第一大股东", "控制权变更",
+)
+_CONTROL_SUFFIXES = ("控制权", "控股权")
+
+# 控股 and 实控 are absent on purpose: in these tables they describe any stake
+# at all ("实控90%", "出资30万持股10%"), not a takeover.
+_CONTROL_PRE = 25
+_CONTROL_POST = 12
+
+
+def _has_control_language(text: str, start: int, end: int) -> bool:
+    before = text[max(0, start - _CONTROL_PRE): start]
+    after = text[end: end + _CONTROL_POST]
+    return (any(v in before for v in _CONTROL_VERBS)
+            or any(x in after for x in _CONTROL_SUFFIXES))
+
+
 def _find_listed_entity(text: str) -> Optional[dict[str, str]]:
-    """Find a listed company named next to a mainland stock code.
+    """Find a listed company the target company controls.
 
     Stage 1 writes "上纬新材（688585.SH）", so the bracket is the anchor: the
     Chinese characters immediately before it are the name. Chinese has no word
     separators, so scanning backwards without that anchor swallows the
     surrounding sentence ("智元机器人取得上纬新材").
+
+    Being named near a stock code is not enough — see _CONTROL_LANGUAGE. When
+    nothing nearby says control, this returns None and the filings channel is
+    skipped, which is the right outcome: a missing channel costs less than
+    another company's disclosures filed as the target's.
 
     A-share short names run 2-6 characters; anything longer is sentence, not name.
     """
@@ -586,6 +622,8 @@ def _find_listed_entity(text: str) -> Optional[dict[str, str]]:
         name = re.sub(_LEADING_VERBS, "", match.group(1))
         if len(name) < 2 or any(bad in name for bad in _NOT_A_COMPANY):
             continue
+        if not _has_control_language(text, match.start(), match.end()):
+            continue
         key = f"{name}|{match.group(2)}"
         counts[key] = counts.get(key, 0) + 2  # weight the trustworthy form
 
@@ -597,6 +635,8 @@ def _find_listed_entity(text: str) -> Optional[dict[str, str]]:
             name = "".join(re.findall(r"[\u4e00-\u9fff]", window))[-4:]
             name = re.sub(_LEADING_VERBS, "", name)
             if len(name) < 2 or any(bad in name for bad in _NOT_A_COMPANY):
+                continue
+            if not _has_control_language(text, match.start(), match.end()):
                 continue
             key = f"{name}|{match.group(1)}"
             counts[key] = counts.get(key, 0) + 1
