@@ -105,6 +105,11 @@ DEFAULTS: dict[str, Any] = {
         # Patents are queried once per legal-entity name, so several queries
         # hit an endpoint that throttles bursts. Space them out.
         "patent_query_gap_seconds": 3,
+        # Fetch the claims for this many patents. The query endpoint gives only
+        # the abstract; the claims are the operative text a technical
+        # comparison needs. One extra page fetch each, and Google throttles
+        # bursts, so this is capped rather than applied to everything.
+        "patent_claims_for": 20,
         # Pull the text out of the primary filings. Off would leave the channel
         # stopping at the PDF link, which no chat-side fetch can decode.
         "extract_filing_text": True,
@@ -118,10 +123,25 @@ DEFAULTS: dict[str, Any] = {
     "local_sources": {
         "enabled": True,
         "domains": [
-            "ccgp.gov.cn",        # 中国政府采购网 — award notices, public
-            "tianyancha.com",     # 工商 registry — gated, snippet only
-            "qcc.com",            # 企查查 — gated, snippet only
-            "aiqicha.baidu.com",  # 爱企查 — gated, snippet only
+            # Registry and procurement. Baidu indexes them; their own pages are
+            # gated or robots-blocked, so the indexed snippet is the evidence —
+            # and for procurement the award table lives in that snippet.
+            "ccgp.gov.cn",        # 中国政府采购网 — award notices
+            "tianyancha.com",     # 天眼查 — 工商 registry
+            "qcc.com",            # 企查查 — 工商 registry
+            "aiqicha.baidu.com",  # 爱企查 — 工商 registry
+            # Chinese financial platforms that DO serve their text to a normal
+            # request. Found by mining the domains Baidu actually returned
+            # across five runs rather than by guessing: these three were the
+            # only ones with a readable body. Measured on a saved Unitree URL —
+            # xinsanban 1,299 chars carrying the 上纬新材 control acquisition
+            # with its date and mechanism, stock 1,496 on the HK listing and
+            # shareholder structure, cls.cn 1,620. Rejected in the same test:
+            # baijiahao (blocked), news.qcc.com (blocked), b2b.baidu.com (JS),
+            # caifuhao.eastmoney.com (empty).
+            "xinsanban.10jqka.com.cn",   # 同花顺 — equity changes, NEEQ
+            "stock.10jqka.com.cn",       # 同花顺 — shareholder structure
+            "cls.cn",                    # 财联社 — newswire
         ],
         "results_per_domain": 20,
         "max_pages_fetched": 20,

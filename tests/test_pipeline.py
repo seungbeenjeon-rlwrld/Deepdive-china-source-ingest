@@ -961,6 +961,81 @@ class TestListedEntityNeedsAControlRelationship(unittest.TestCase):
             "该公司为非上市企业，合作方包括均胜电子与长盈精密。"))
 
 
+class TestPatentClaimsReplaceTheAbstract(unittest.TestCase):
+    """The query endpoint returns the abstract; the claims are the operative text.
+
+    Measured on CN109941369B: abstract 807 chars, claims 1,328, description
+    24,348. The description is background prose and is deliberately not taken.
+    Live on four Unitree patents, claims came back at 1,233-3,105 chars.
+    """
+
+    def _record(self, number="CN1", content="초록"):
+        from src.models import SourceRecord
+
+        return SourceRecord(
+            source_id="P1", title="专利", retrieval_url=f"http://p/{number}",
+            canonical_url=f"http://p/{number}", content=content,
+            content_access_status="SEARCH_SNIPPET_ONLY", origin="patent_registry",
+            extra={"publication_number": number},
+        )
+
+    def _collector(self):
+        from src.collectors import PatentCollector
+
+        class StubFetcher:
+            class policy:
+                user_agent = "test"
+                timeout_seconds = 5
+
+            @staticmethod
+            def _throttle():
+                return None
+
+        return PatentCollector(StubFetcher())
+
+    def test_claims_replace_the_abstract_and_the_abstract_is_kept(self):
+        claims = "1.一种机器人集成关节单元，其特征在于，" + "包括电机总成。" * 40
+        html = f'<div class="claim-text">{claims}</div>'
+        record = self._record(content="초록 원문")
+        with fake_requests(get=lambda *a, **k: _Resp(html)):
+            failures = self._collector()._add_claims([record])
+        self.assertEqual(failures, [])
+        self.assertEqual(record.content_access_status, "HIGH_FIDELITY_EXTRACTION")
+        self.assertIn("机器人集成关节单元", record.content)
+        self.assertEqual(record.extra["content_is"], "claims")
+        # Nothing is thrown away.
+        self.assertEqual(record.extra["abstract"], "초록 원문")
+
+    def test_a_stub_page_keeps_the_abstract(self):
+        record = self._record(content="초록 원문")
+        with fake_requests(get=lambda *a, **k: _Resp('<div class="claim-text">짧음</div>')):
+            failures = self._collector()._add_claims([record])
+        self.assertEqual(record.content, "초록 원문")
+        self.assertEqual(record.content_access_status, "SEARCH_SNIPPET_ONLY")
+        self.assertIn("too short", failures[0]["error"])
+
+    def test_throttling_stops_and_keeps_what_it_has(self):
+        records = [self._record("CN1"), self._record("CN2")]
+        with fake_requests(get=lambda *a, **k: _Resp("", status=503)):
+            failures = self._collector()._add_claims(records)
+        self.assertIn("throttled", failures[0]["error"])
+        self.assertEqual(len(failures), 1, "should stop, not retry every record")
+        self.assertTrue(all(r.content == "초록" for r in records))
+
+
+class _Resp:
+    """Minimal requests.Response stand-in."""
+
+    def __init__(self, text, status=200):
+        self.text = text
+        self.status_code = status
+        self.encoding = "utf-8"
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
 class TestPatentsMustBeAssignedToTheTarget(unittest.TestCase):
     """The query was q=, a full-text search, not assignee=.
 
@@ -1326,7 +1401,7 @@ class TestPatentsCoverEveryAssigneeName(unittest.TestCase):
 
             calls = []
 
-            def collect(company, assignee, *, max_records=60):
+            def collect(company, assignee, *, max_records=60, **_kw):
                 calls.append(assignee)
                 if assignee == "旧名有限公司":
                     return [patent("CN1"), patent("CN2")], [], 2
@@ -1360,7 +1435,7 @@ class TestPatentsCoverEveryAssigneeName(unittest.TestCase):
         try:
             calls = []
 
-            def collect(company, assignee, *, max_records=60):
+            def collect(company, assignee, *, max_records=60, **_kw):
                 calls.append(assignee)
                 return [], [{"page": 0, "error": "HTTP 503 (throttled)"}], None
 
@@ -1384,7 +1459,7 @@ class TestPatentsCoverEveryAssigneeName(unittest.TestCase):
     def test_a_single_name_string_still_works(self):
         h = Harness(MockProvider())
         try:
-            def collect(company, assignee, *, max_records=60):
+            def collect(company, assignee, *, max_records=60, **_kw):
                 return [], [], 0
 
             import src.pipeline as mod

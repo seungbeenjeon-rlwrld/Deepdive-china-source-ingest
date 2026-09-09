@@ -667,6 +667,7 @@ class PatentCollector:
         *,
         max_records: int = 60,
         start_index: int = 1,
+        claims_for: int = 0,
     ) -> tuple[list[SourceRecord], list[dict], Optional[int]]:
         import requests
         from urllib.parse import quote
@@ -788,6 +789,9 @@ class PatentCollector:
             if len(records) >= max_records or len(items) < per_page:
                 break
 
+        if claims_for:
+            failures.extend(self._add_claims(records[:claims_for]))
+
         if wrong_assignee:
             self.log.info(
                 "dropped patents assigned elsewhere for %r: %s",
@@ -801,3 +805,85 @@ class PatentCollector:
             })
 
         return records, failures, total
+
+    def _add_claims(self, records: list[SourceRecord]) -> list[dict]:
+        """Replace the abstract with the patent's claims.
+
+        The query endpoint returns the published abstract, which says what the
+        invention is for. The claims say what it actually covers — the legally
+        operative text, and the part a technical comparison needs. Both are on
+        the public detail page, free, with no search API involved.
+
+        The description is deliberately not taken. Measured on CN109941369B:
+        abstract 807 chars, claims 1,328, description 24,348 — mostly
+        background prose that would swell the corpus for little.
+        """
+        import requests
+        from bs4 import BeautifulSoup
+
+        failures: list[dict] = []
+        for record in records:
+            url = record.canonical_url or record.retrieval_url
+            if not url:
+                continue
+            try:
+                self.fetcher._throttle()
+                response = requests.get(
+                    url,
+                    headers={
+                        "User-Agent": self.fetcher.policy.user_agent,
+                        "Accept": "text/html",
+                        "Referer": "https://patents.google.com/",
+                    },
+                    timeout=self.fetcher.policy.timeout_seconds,
+                )
+                if response.status_code in (429, 503):
+                    failures.append({
+                        "stage": "patent_claims",
+                        "publication_number": (record.extra or {}).get(
+                            "publication_number"),
+                        "error": f"HTTP {response.status_code} (throttled); "
+                                 "abstract kept",
+                    })
+                    break  # the rest will be throttled too
+                response.raise_for_status()
+                # requests mis-guesses the charset here and returns mojibake.
+                response.encoding = "utf-8"
+                soup = BeautifulSoup(response.text, "html.parser")
+                claims = " ".join(
+                    element.get_text(" ", strip=True)
+                    for element in soup.select("div.claim-text")
+                ).strip()
+            except Exception as exc:
+                failures.append({
+                    "stage": "patent_claims",
+                    "publication_number": (record.extra or {}).get(
+                        "publication_number"),
+                    "error": str(exc)[:120],
+                })
+                continue
+
+            if len(claims) < 200:
+                failures.append({
+                    "stage": "patent_claims",
+                    "publication_number": (record.extra or {}).get(
+                        "publication_number"),
+                    "error": f"claims too short to be real ({len(claims)} chars); "
+                             "abstract kept",
+                })
+                continue
+
+            abstract = record.content
+            record.content = claims
+            # Extraction from the page's own markup, so the wording is the
+            # patent's; the layout of numbered claims does not survive.
+            record.content_access_status = "HIGH_FIDELITY_EXTRACTION"
+            record.extra = {
+                **(record.extra or {}),
+                "abstract": abstract,
+                "claims_chars": len(claims),
+                "content_is": "claims",
+            }
+            record.derived = {**(record.derived or {}), "content_chars": len(claims)}
+        return failures
+

@@ -85,6 +85,11 @@ registries:
   patent_assignee: null         # legal entity, e.g. 上海智元新创技术有限公司
   max_filings: 60
   max_patents: 60
+  # 특허 청구항을 몇 건까지 가져올지. 조회 엔드포인트는 초록만 주는데, 청구항이
+  # 법적으로 유효한 범위를 규정하는 본문임. 실측(CN109941369B): 초록 807자,
+  # 청구항 1,328자, 명세서 24,348자 — 명세서는 배경 서술이 대부분이라 제외함.
+  # 건당 상세 페이지 1회 fetch 이고 Google 이 버스트를 스로틀하므로 상한을 둠.
+  patent_claims_for: 20
   # Read the primary filings, do not just link them. Measured: WebFetch returns
   # "raw PDF binary stream" for a cninfo PDF at 6MB and at 114KB alike, so a
   # bare link leaves the downstream reader with nothing. Extracted text is
@@ -114,10 +119,20 @@ registries:
 local_sources:
   enabled: true
   domains:
+    # Gated or robots-blocked: the indexed snippet is the evidence, and for
+    # procurement the award table is in that snippet.
     - ccgp.gov.cn         # 中国政府采购网 — award notices
     - tianyancha.com      # 天眼查 — 工商 registry
     - qcc.com             # 企查查 — 工商 registry
     - aiqicha.baidu.com   # 爱企查 — 工商 registry
+    # These serve their body text to a normal request, so records here become
+    # full text rather than snippets. Chosen by mining the domains Baidu
+    # actually returned across five runs and fetching one saved URL from each;
+    # baijiahao, news.qcc.com, b2b.baidu.com and caifuhao.eastmoney.com were
+    # tested the same way and are blocked, JS-rendered or empty.
+    - xinsanban.10jqka.com.cn   # 同花顺 — 지분변동·신삼판
+    - stock.10jqka.com.cn       # 同花顺 — 주주구조
+    - cls.cn                    # 财联社 — 뉴스와이어
   results_per_domain: 20
   max_pages_fetched: 20
 

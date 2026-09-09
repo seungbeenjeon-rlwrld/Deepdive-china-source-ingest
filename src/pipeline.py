@@ -552,7 +552,8 @@ class Pipeline:
                 time.sleep(float(cfg.get("patent_query_gap_seconds", 3)))
             try:
                 found, fails, total = collector.collect(
-                    company, name, max_records=cap - len(records)
+                    company, name, max_records=cap - len(records),
+                    claims_for=int(cfg.get("patent_claims_for", 20)),
                 )
             except Exception as exc:
                 failures.append({"assignee": name, "error": str(exc)})
