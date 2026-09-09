@@ -32,11 +32,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.collectors import is_gated  # noqa: E402
 from src.fetcher import FetchBlocked, Fetcher, FetchError, FetchPolicy  # noqa: E402
 
-# Baidu's own infrastructure and媒体 aggregators that carry no company record.
+# Infrastructure and Q&A hosts that carry no company record. Matched on the
+# HOST, not as a substring of the URL: "baidu.com/s" as a substring also
+# excludes baijiahao.baidu.com/s?id=..., which is Baidu's content platform and
+# the second-largest host in these responses at 130 hits. That mistake kept it
+# out of the first audit entirely.
 SKIP_HOSTS = (
-    "baidu.com/s", "bdstatic.com", "browser.qq.com", "nourl.ubs.baidu.com",
+    "bdstatic.com", "browser.qq.com", "nourl.ubs.baidu.com",
     "zhidao.baidu.com", "wenku.baidu.com", "google.com", "bing.com",
 )
+# (host, path prefix) for search-results pages, which are fetchable and useless.
+SKIP_PATHS = (("baidu.com", "/s"), ("baidu.com", "/link"))
+
+
+def _skip(url: str, host: str) -> bool:
+    from urllib.parse import urlparse
+
+    if any(host == h or host.endswith("." + h) for h in SKIP_HOSTS):
+        return True
+    path = urlparse(url).path or "/"
+    return any(host == h and path.startswith(pre) for h, pre in SKIP_PATHS)
 
 MIN_BODY = 400          # below this a "body" is navigation chrome
 SAMPLE_PER_HOST = 2     # try a second URL before writing a host off
@@ -53,7 +68,7 @@ def collect_urls(paths: list[str]) -> dict[str, list[str]]:
                         and value.startswith("http"):
                     host = (urlparse(value).netloc or "").lower()
                     host = host.removeprefix("www.")
-                    if not host or any(s in value for s in SKIP_HOSTS):
+                    if not host or _skip(value, host):
                         continue
                     urls = by_host.setdefault(host, [])
                     if value not in urls:

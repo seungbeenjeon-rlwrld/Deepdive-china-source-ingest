@@ -26,10 +26,10 @@ research/{회사명}/{실행시각}/
 ├── 01_entity_discovery.json   같은 내용 + 주입된 검색 내역
 ├── 02_sources.md              수집 모델의 출력 원문
 ├── 02_sources.json            소스 색인 + 라벨 감사 결과
-├── 03_search_sweep.json       Baidu 구조화 검색 결과
+├── 03_search_sweep.json       Baidu 검색 결과 — 읽을 수 있는 페이지는 **전문**
 ├── 05_reposts.json            차단된 소스의 재게시본
 ├── 06_exchange_filings.json   거래소 공시 링크 + **1차 문서 전문(장별)**
-├── 07_patents.json            특허 (법인명 전부에 대해 조회)
+├── 07_patents.json            특허 — 상위 건은 **청구항 전문**(`extra.content_is: claims`)
 ├── 08_local_sources.json      중국 로컬 도메인 — 정부조달·工商 등기
 ├── raw_sources/source_NNN.md  소스 1건 = 파일 1개 (YAML front matter + 본문)
 └── logs/run.log
@@ -132,8 +132,8 @@ derived:
 | --- | --- | --- |
 | 1 | 거래소 공시 **전문** | `origin: exchange_filing_text` — 공시 PDF에서 추출한 본문. 장(節)별로 갈려 있음 |
 | 1 | 거래소·정부 공시 (링크) | `06_exchange_filings.json`, `origin: exchange_filing_registry` |
-| 2 | 특허·논문 | `07_patents.json`, `origin: patent_registry` |
-| 3 | 고품질 산업·경제 매체 | `origin: provider_search` 중 언론사 도메인 |
+| 2 | 특허·논문 | `07_patents.json`, `origin: patent_registry`. `extra.content_is == "claims"` 면 본문이 청구항이고 초록은 `extra.abstract` 에 있음 |
+| 3 | 고품질 산업·경제 매체 | `origin: provider_search` 중 언론사 도메인. `VERBATIM_FULL_TEXT` 인 것은 실제로 본문을 읽은 것 |
 | 4 | 재게시본 | `05_reposts.json`, `origin: repost_resolution` |
 | 5 | 정부조달 낙찰공고 | `08_local_sources.json`, `local_domain: ccgp.gov.cn` — 낙찰 금액이 스니펫에 포함됨 |
 | 6 | 검색 스니펫 | `origin: provider_search`, `SEARCH_SNIPPET_ONLY` |

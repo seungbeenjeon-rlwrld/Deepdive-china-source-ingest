@@ -1,0 +1,122 @@
+
+115 hosts probed: 53 readable, 25 thin, 16 error, 11 gated, 10 blocked
+
+READABLE — candidates for local_sources.domains
+host                                hits   chars  sample
+unitree.com                           12   16286  Unitree Robotics is a world-renowned civilian robotics company, which 
+ebrun.com                              1   16094  智元主办AGIBOT WORLD CHALLENGE 2026收官 比赛结果公布  作者：亿邦动力 文章来源：亿邦动力  2026-06-0
+robot.ofweek.com                       1    6238  3D打印蜘蛛机器人  最新资讯  广州又跑出一个机器人新玩家，这次是尚品宅配  文源 | 源媒汇 作者 | 谢春生 广州具身智能产业，正在悄
+hub.baai.ac.cn                         1    4787  刚刚，机器人运动会冠军诞生！18金双榜第一，乒乓球技震住丁宁 Rob Embodied AI Agent 新智元 2026-08-29 18
+cj.sina.com.cn                         1    3986  2025年10月20日，宇树科技正式发布其新一代仿生人形机器人H2，其流畅的武术与舞蹈动作演示视频迅速引爆科技圈。这不仅是一次产品迭代，更是
+finance.sina.com.cn                    5    3935  （来源：周佳丽 投资界）  十年接力。  作者/周佳丽  报道/投资界PEdaily  2019年的夏天，杭州滨江，一座不起眼的办公楼里，2
+it.sohu.com                            2    3617  风口上的“未来”，无锡的位置在哪？  新浪财经  文章  总阅读  查看TA的文章>  风口上的“未来”，无锡的位置在哪？ 2026-08-
+post.smzdm.com                         4    3537  宇树第四款人形机器人发布，能武擅舞，珠光面庞赛博人类，Unitree H2 仿生人天命觉醒！  2025-10-20 16:16:54 3点
+unitree.cc                             1    3240  Kung Fu Meets Spring  Unitree Spring Festival Gala Robots Present "Cyb
+m.unitree.com                          1    3240  Kung Fu Meets Spring  Unitree Spring Festival Gala Robots Present "Cyb
+news.china.com                         1    3043  宇树发布UnitreeH2 天命觉醒仿生人亮相  用微信扫描二维码 分享至好友和朋友圈  关键词：  宇树发布UnitreeH2 天命觉醒仿
+sensorexpert.com.cn                    1    2968  全球27国526支战队角逐AGIBOT WORLD CHALLENGE @ICRA 2026线上赛榜单揭晓  感知看世界 2026-05-0
+shobserver.com                         1    2689  智元揽获EAI-100五项重磅大奖，姚卯青获“EAI 先锋人物”  产经 2026-03-25 08:10 来源：上观新闻 作者：文汇报 沈
+jfdaily.com                            2    2487  “90后钢铁侠”在上海做强人形机器人企业，走开源路线打造创新生态  创新之城 2025-02-28 20:28 来源：上观新闻 作者：解放日
+t.cj.sina.com.cn                       2    2426  当全球科技界还在热议人工智能的发展壁垒时，具身智能（Embodied Intelligence），这项融合了感知计算、环境建模与物理执行三位
+ftnat.com                              1    2226  宇树！精准感知！智能随行！ 发布于：2026-09-02 14:49:43  精准感知 智能随行  配备8核高性能CPU，升级 ISS 3.
+export.shobserver.com                  1    2175  智元主办的全球机器人巅峰对决结果揭晓：中科院成最大赢家，一家手机团队夺冠 2026-06-05 18:17  机器人与自动化领域顶会ICRA
+guba.sina.com.cn                       2    1979  上纬新材 (sh688585) +关注 取消关注 行情取消 行情展开  @open@  @high@  @low@  @volume@  @
+news.sohu.com                          5    1862  宇树科技要求更名！背后原因藏着更深思考，近期重要动作频繁  快文娱乐  文章  总阅读  娱乐领域优质创作者  查看TA的文章>  原创 宇
+tech.cnr.cn                            1    1825  APC2026智元合作伙伴大会成功举行 共启具身智能生产力新时代 2026-04-18 21:05:48 来源：央广网  2026年4月17
+i.ifeng.com                            1    1768  4月17日，2026年智元合作伙伴大会（APC 2026）在上海举行，来自30多个国家和地区的2500余名合作伙伴参会。  智元创始人、董事
+pconline.com.cn                        1    1728  从秀特技到下场干活，宇树发布 Unitree As2，四足机器人迎来新变局  一哲科技说 发布于：2026-02-25 17:48  最近，
+gubaf10.eastmoney.com                  1    1689  智元机器人八大核心合作公司梳理，值得收藏研究！ 老狼撩股KFSJ21 2025-03-10 23:05:06 来自广东  78  16  ♥
+zhiyuan-robot.com                      3    1645  全栈技术 智元远征 远征A3 远征A2旗舰版 远征A2青春版 VR遥操作套装 智元灵犀 灵犀X2 灵犀X1 智元精灵 精灵G2 精灵G1 M
+itbear.com.cn                          1    1536  近日，机器人领域迎来新动态，宇树科技推出全新四足机器人Unitree As2，引发行业广泛关注。此前，宇树科技凭借春晚人形机器人“练武术”的
+xinsanban.10jqka.com.cn                3    1517  2月21日，人形机器人概念股强势攀升。  宇树科技成功背后的资本推手近期备受关注，其中不乏雷军、王兴和沈南鹏这样的投资大佬，现如今该公司的老
+huacheng.gz-cmc.com                    2    1503  全球27国526支战队同台竞技，AGIBOT WORLD CHALLENGE @ICRA 2026线上赛榜单揭晓  2026-04-30 1
+cnr.cn                                 2    1413  智元创新已启动赴港上市流程 董事长曾自称公司营收每年实现20倍增长 2026-07-24 21:34:07 来源：央广网  央广网北京7月2
+cbgc.scol.com.cn                       1    1239  宇树科技全资子公司落户成都，将在春熙路商圈打造其全球规模最大的产品首发中心  川观新闻 | 记者 薛维睿  2026-09-03 11:02
+article.pchome.net                     1    1231  智元机器人亮相联合国：表演书法太极，展示中国智造风采  PChome | 编辑: 汤雪倩 2026-02-11 13:54:16  2026
+k.sina.com.cn                          2    1185  宇树科技在2025年经历两次关键更名——先是从“有限公司”改制为“股份有限公司”，后又剥离地域标签“杭州”，这两步动作被市场普遍解读为其冲刺
+ic-item.jd.com                         2    1149  京东试用 new ◤  加入购物车 Unitree宇树宇树4DLiDAR L2 3D激光雷达导航避障slam超广角360深度扫描智能小车 4
+news.mydrivers.com                     1    1091  正文内容 评论（ 0 ）  宇树科技更名：去掉“杭州”两字 正办理工商变更  2025-10-22 14:40:35 出处：快科技 作者： 
+shujiaowang.cn                         1    1085  8月29日，AGIBOT与敏实集团合作的欧洲首条人形机器人量产线在塞尔维亚沙巴茨正式投产。塞尔维亚总统武契奇出席仪式并参观产线，中国驻塞大使
+ithome.com                             3     921  感谢IT之家网友 西窗 、 風見暉一 、 六月河 、 会弹琴的九号 的线索投递！  IT之家 8 月 15 日消息，智元机器人昨天通过公众号
+guba.sina.cn                           1     905  智元机器人对上纬新材控制权再加强 本报记者 金婉霞 9月24日晚间，上纬新材料科技股份有限公司（以下简称“上纬新材”）发布公告称，上海智元恒
+cq.xinhuanet.com                       1     901  2026年伊始，重庆机器人产业迎来利好。天眼查信息显示，全球足式及人形机器人领军企业宇树科技股份有限公司（简称：宇树科技）全资子公司重庆宇羿
+stock.10jqka.com.cn                    6     885  A股 港股 美股 期货 基金 下载客户端 登录  加载中...  宇树科技股东持股数据公布，美团位列第二大股东 旗下公司合计持股近9.65%
+m.yzwb.net                             1     862  未发布文章，仅支持15分钟预览  共启具身智能生产力新时代，2026智元合作伙伴大会将举行  {{dynamicData.sub_info.
+post.m.smzdm.com                       1     774  生命里的一抹亮光 关注  这激光雷达真牛，性价比高还轻便，对机器人感知系统很有帮助，值得一看  宇树机器人感知系统_激光雷达篇 智享新动力 
+news.17173.com                         1     770  首批租户可0元体验！智元机器人将发布擎天租平台  2025-12-15 16:47:17 神评论  智元机器人12月22日发布擎天租平台，首
+g.pconline.com.cn                      1     733  宇树科技更名：去掉“杭州”两字 正办理工商变更  新闻 太平洋科技 2025-10-22 14:49  2025-10-22 14:49:0
+m.book118.com                          1     675  版权处理 版权声明 侵权处理 免责声明 致被侵权者一封信 网站诺言 使用帮助 用户协议 隐私政策 上传下载 投稿帮助 文档保障服务承诺 文赚
+finance.sina.cn                        5     664  宇树科技全资子公司落户成都 将构建三基地两中心产业矩阵  观点新媒体 观点新媒体官方账号 09.03 09:36 关注  观点网讯： 9月2
+cls.cn                                 3     664  关于我们 网站声明 联系方式 用户反馈 网站地图 帮助 首页 电报 话题 盯盘 VIP FM 投研 下载  宇树科技对外投资新动向！成立新公
+stcn.com                               1     664  智元创新，赴港上市最新消息！  来源：证券时报网 作者：聂英好 2026-07-24 19:57 字号 超大 大 标准 小  点赞 分享  
+readhub.cn                             1     640  APC2026 智元合作伙伴大会成功举行，共启具身智能生产力新时代  4 月 17 日 收藏  2026 年 智元 合作伙伴大会在上海举行，
+peopleapp.com                          1     631  2026智元合作伙伴大会在沪召开  人民日报客户端上海频道 沈文敏 2026-04-17 23:08  4月17日，2026智元合作伙伴大会
+nbd.com.cn                             1     580  10月23日，据天眼查App显示，宇树科技完成更名。 “杭州宇树科技股份有限公司”企业名称变更为“宇树科技股份有限公司”。同时，王兴兴由执行
+farennews.com                          1     571  完成股改？宇树科技更名为“杭州宇树科技股份有限公司”，公司回应  2025-05-30 10:05 来源：澎湃新闻 作者： 分享：  5月2
+nbt.edu.cn                             1     540  宁理新闻 要闻聚焦 媒体视界 简讯速览  校情总览 学校概况 学校领导 学校章程 学校标识 组织机构 理工大事  学科学院 学科建设 教学机
+agibot.com                             1     532  Create Unlimited Productivity via Intelligent Machines More Create Unl
+news.cheaa.com                         1     529  行业新闻 宇树科技 四足机器人  能驮人穿丛林，还能陪你打网球：宇树新款四足机器人As2发布  2026-02-25 08:05 来源：网络
+
+REJECTED
+wap.eastmoney.com                      2      thin  body under the chrome threshold
+kan.china.com                          1      thin  body under the chrome threshold
+jiuyangongshe.com                      1      thin  body under the chrome threshold
+stock.stockstar.com                    1      thin  body under the chrome threshold
+c.m.163.com                            2      thin  body under the chrome threshold
+sina.cn                                1      thin  body under the chrome threshold
+jhyc-inst.com                          1      thin  body under the chrome threshold
+zjitc.edu.cn                           1      thin  body under the chrome threshold
+sd.xinhuanet.com                       1      thin  body under the chrome threshold
+finance.ce.cn                          1      thin  body under the chrome threshold
+36kr.com                               1      thin  body under the chrome threshold
+b2b.baidu.com                          3      thin  body under the chrome threshold
+zhipin.com                             1      thin  body under the chrome threshold
+baijiahao.baidu.com                  127      thin  body under the chrome threshold
+zhikun.org.cn                          1      thin  body under the chrome threshold
+image.baidu.com                        2      thin  body under the chrome threshold
+mp.weixin.qq.com                     345     gated  listed in GATED_HOSTS; never fetched
+aiqicha.baidu.com                     91     gated  listed in GATED_HOSTS; never fetched
+ccgp.gov.cn                           44   blocked  robots.txt disallows fetching http://www.ccgp.gov.cn/cggg/zygg/zbgg/202609/t20260903_27256
+qcc.com                               39     gated  listed in GATED_HOSTS; never fetched
+baike.baidu.com                       25     error  https://baike.baidu.com/item/%E5%AE%87%E6%A0%91%E6%9C%BA%E5%99%A8%E4%BA%BA/68611475 return
+mnews.tianyancha.com                  22     gated  listed in GATED_HOSTS; never fetched
+news.tianyancha.com                   19     gated  listed in GATED_HOSTS; never fetched
+m.tianyancha.com                      17     gated  listed in GATED_HOSTS; never fetched
+news.qcc.com                          17     gated  listed in GATED_HOSTS; never fetched
+weibo.com                             15      thin  body under the chrome threshold
+xueqiu.com                            15   blocked  fetcher flagged a challenge page
+tianyancha.com                        14     gated  listed in GATED_HOSTS; never fetched
+zhuanlan.zhihu.com                    10     error  https://zhuanlan.zhihu.com/p/1929902061962634726 returned HTTP 403
+caifuhao.eastmoney.com                 6      thin  body under the chrome threshold
+m.qcc.com                              4     gated  listed in GATED_HOSTS; never fetched
+cloud.tencent.com                      4      thin  body under the chrome threshold
+mbd.baidu.com                          3      thin  body under the chrome threshold
+blog.csdn.net                          3     error  https://blog.csdn.net/Godspeed_zwh/article/details/157026873 returned HTTP 521
+mt.sohu.com                            2   blocked  robots.txt disallows fetching http://mt.sohu.com/a/946337367_115510
+gongshang.mingluji.com                 2   blocked  fetcher flagged a challenge page
+zhihu.com                              2     error  https://www.zhihu.com/pin/1963626848714991269 returned HTTP 403
+m.thepaper.cn                          2   blocked  fetcher flagged a challenge page
+stock.hexun.com                        1      thin  body under the chrome threshold
+m.szhk.com                             1   blocked  robots.txt disallows fetching http://m.szhk.com/news_31808425514992185.html
+1688.com                               1   blocked  fetcher flagged a challenge page
+xin.baidu.com                          1      thin  body under the chrome threshold
+m.hexun.com                            1     error  https://m.hexun.com/stock/2026-09-03/224944743.html returned HTTP 567
+top.qcc.com                            1     gated  listed in GATED_HOSTS; never fetched
+m.10jqka.com.cn                        1      thin  body under the chrome threshold
+wxrb.com                               1     error  https://wxrb.com/doc/2026/08/31/465844.shtml returned HTTP 403
+h5.fhtfuture.com                       1   blocked  robots.txt disallows fetching http://h5.fhtfuture.com/xynews/97217
+t.10jqka.com.cn                        1     error  https://t.10jqka.com.cn/pid_604515036.shtml returned HTTP 401
+myzaker.com                            1   blocked  fetcher flagged a challenge page
+bilibili.com                           1   blocked  fetcher flagged a challenge page
+m.bilibili.com                         1     error  https://m.bilibili.com/video/BV1mYs3zdEkQ returned HTTP 412
+gfan.com                               1     error  could not fetch https://www.gfan.com/info/597617.html: HTTPSConnectionPool(host='www.gfan.
+cnii.com.cn                            1     error  could not fetch https://www.cnii.com.cn/gxxww/rmydb/202508/t20250807_677217.html: HTTPSCon
+xunbiaobao.baidu.com                   1      thin  body under the chrome threshold
+space.bilibili.com                     1      thin  body under the chrome threshold
+blog.51cto.com                         1     error  https://blog.51cto.com/u_15483555/12988929 returned HTTP 567
+tax.tianyancha.com                     1     gated  listed in GATED_HOSTS; never fetched
+support.unitree.com                    1     error  https://support.unitree.com/ returned HTTP 567
+xianjichina.com                        1     error  could not fetch https://www.xianjichina.com/special/detail_567708.html: HTTPSConnectionPoo
+xihang.com.cn                          1     error  could not fetch https://www.xihang.com.cn/2025/0428/c123a91005/page.htm: HTTPSConnectionPo
+huangshan.honbeiyjl.com                1     error  could not fetch http://huangshan.honbeiyjl.com/zanews/783023: HTTPConnectionPool(host='hua
+3108.lightapp.baidu.com                1     error  could not fetch http://3108.lightapp.baidu.com/%D6%C7%D4%AA%BB%FA%C6%F7%C8%CB+AgiBot+%C9%C
