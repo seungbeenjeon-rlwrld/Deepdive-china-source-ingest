@@ -59,16 +59,35 @@ def is_gated(url: Optional[str]) -> bool:
 
 # Search engines answer a title query with their own results page, which is
 # fetchable, long, and completely worthless as a source.
-_SERP_HOSTS = (
-    "baidu.com/s", "google.com/search", "bing.com/search", "sogou.com/web",
-    "so.com/s", "sm.cn/s", "yandex.com/search", "duckduckgo.com",
-    "search.cctv.com", "so.toutiao.com",
+# (host, path prefix). Anchored on the host because substring matching was
+# wrong: "baidu.com/s" also matches baijiahao.baidu.com/s?id=..., which is a
+# Baidu content-platform article, not a results page.
+_SERP_PATHS = (
+    ("baidu.com", "/s"),
+    ("google.com", "/search"),
+    ("bing.com", "/search"),
+    ("sogou.com", "/web"),
+    ("so.com", "/s"),
+    ("sm.cn", "/s"),
+    ("yandex.com", "/search"),
+    ("search.cctv.com", "/"),
+    ("so.toutiao.com", "/"),
 )
+_SERP_HOSTS = ("duckduckgo.com",)
 
 
 def _is_serp(url: str) -> bool:
-    u = (url or "").lower()
-    return any(marker in u for marker in _SERP_HOSTS)
+    try:
+        parsed = urlparse((url or "").lower())
+    except ValueError:
+        return False
+    host = (parsed.netloc or "").removeprefix("www.")
+    if any(host == h or host.endswith("." + h) for h in _SERP_HOSTS):
+        return True
+    path = parsed.path or "/"
+    return any(
+        host == h and path.startswith(prefix) for h, prefix in _SERP_PATHS
+    )
 
 
 # A video page carries no article body — what the extractor returns is player

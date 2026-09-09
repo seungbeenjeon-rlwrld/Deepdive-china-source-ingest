@@ -43,6 +43,11 @@ research:
       - "{company} 客户 合作 订单"
     max_seed_queries: 8
     results_per_query: 20
+  # 검색 결과 페이지의 본문을 몇 건까지 읽을지. 검색은 요약만 주므로 읽지 않으면
+  # 레코드가 단서에 머무름. Baidu 가 반환하는 도메인 114종 중 53종이 평범한
+  # 요청에 본문을 내줌(실측). URL 은 이미 검색 호출로 지불했으므로 쿼터 추가
+  # 소모 없음. 게이트 호스트·검색결과 페이지·동영상은 요청하지 않음.
+  max_pages_fetched: 60
     max_results: 60
     chars_per_result: 220
 
@@ -154,6 +159,11 @@ search_sweep:
   provider: serpapi
   max_queries: 6
   results_per_query: 20
+  # 검색 결과 페이지의 본문을 몇 건까지 읽을지. 검색은 요약만 주므로 읽지 않으면
+  # 레코드가 단서에 머무름. Baidu 가 반환하는 도메인 114종 중 53종이 평범한
+  # 요청에 본문을 내줌(실측). URL 은 이미 검색 호출로 지불했으므로 쿼터 추가
+  # 소모 없음. 게이트 호스트·검색결과 페이지·동영상은 요청하지 않음.
+  max_pages_fetched: 60
   mode: 2                # 0 = web results, 1 = VR cards, 2 = mixed
   freshness: null        # e.g. y2 = last two years, m3 = last three months
   site_filters:

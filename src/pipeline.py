@@ -26,6 +26,8 @@ from .collectors import (
     PatentCollector,
     RepostResolver,
     is_gated,
+    _is_serp,
+    _is_video_page,
 )
 from .config import Config
 from .fetcher import FetchBlocked, FetchError, Fetcher, FetchPolicy
@@ -315,7 +317,7 @@ class Pipeline:
             self._progress(f"      {domain}: {found}{note}")
 
         # Public pages get their bodies read; gated registries never do.
-        fetched = self._fetch_local_bodies(records, cfg)
+        fetched = self._read_bodies(records, int(cfg.get("max_pages_fetched", 20)))
 
         payload = {
             "target_company": company,
@@ -418,11 +420,20 @@ class Pipeline:
         ]
         return candidates[0] if candidates else None
 
-    def _fetch_local_bodies(
-        self, records: list[SourceRecord], cfg: dict[str, Any]
-    ) -> int:
-        """Read the public pages. Gated hosts keep their snippet."""
-        limit = int(cfg.get("max_pages_fetched", 20))
+    def _read_bodies(self, records: list[SourceRecord], limit: int) -> int:
+        """Read the pages behind search results. Gated hosts keep their snippet.
+
+        Search returns a summary, so a record left as it arrives is a pointer,
+        not evidence. Auditing the domains Baidu actually returns found 53 of
+        114 serving their body text to a normal request — 亿邦动力 at 16k chars,
+        OFweek 6.2k, 新智元 4.8k, the Sina finance and Shanghai Observer
+        properties in the 2-4k range. The URLs are already paid for by the
+        search call that produced them, so reading them costs no quota.
+
+        Search-engine result pages and video pages are refused for the same
+        reason the repost resolver refuses them: fetchable, long, and not a
+        source.
+        """
         if limit <= 0:
             return 0
         fetcher = self._get_fetcher()
@@ -431,7 +442,7 @@ class Pipeline:
             if fetched >= limit:
                 break
             url = record.retrieval_url or ""
-            if not url or is_gated(url):
+            if not url or is_gated(url) or _is_serp(url) or _is_video_page(url):
                 continue
             try:
                 page = fetcher.fetch(url)
@@ -1555,6 +1566,17 @@ class Pipeline:
         for offset, record in enumerate(records, start=1):
             record.source_id = f"SEARCH_{offset:03d}"
 
+        # Read the pages, don't just list them. The sweep used to keep every
+        # result as the search summary it arrived as: measured on AgiBot, 167
+        # records holding 19,277 chars between them, about 115 each. The URLs
+        # are already paid for, and 53 of the 114 domains Baidu returns serve
+        # their text to a normal request.
+        read = self._read_bodies(records, int(cfg.get("max_pages_fetched", 60)))
+        if read:
+            self._progress(
+                f"      read {read} of {len(records)} result pages in full"
+            )
+
         payload = {
             "target_company": company,
             "queries_available": len(queries),
@@ -1565,14 +1587,17 @@ class Pipeline:
             "results": [r.to_dict() for r in records],
             "failures": failures,
             "queries_dropped": dropped,
+            "pages_read_in_full": read,
             "engine_suggested_anchors": discovered_anchors,
             "generated_at": utc_now_iso(),
             "provider": searcher.name,
             "endpoint": searcher.describe().get("endpoints", {}).get("search"),
             "content_note": (
-                "Structured search returns titles plus a search summary, not article "
-                "full text. Every record is therefore labelled SEARCH_SNIPPET_ONLY or "
-                "URL_ONLY — never VERBATIM_FULL_TEXT."
+                "Search returns a title and a summary. Where the page serves its "
+                "text to a normal request it is fetched and the record becomes "
+                "VERBATIM_FULL_TEXT; otherwise it stays SEARCH_SNIPPET_ONLY or "
+                "URL_ONLY. Gated hosts (WeChat, the 工商 registries) are never "
+                "fetched, and search-result and video pages are refused."
             ),
         }
 
@@ -1591,6 +1616,7 @@ class Pipeline:
 
         self.metadata.search_sweep_status = "completed" if not failures else "completed_with_errors"
         self.metadata.counts["search_sweep_results"] = len(records)
+        self.metadata.counts["search_sweep_pages_read"] = read
         self.metadata.counts["engine_suggested_anchors"] = len(discovered_anchors)
         self.metadata.counts["search_sweep_failures"] = len(failures)
         if failures:

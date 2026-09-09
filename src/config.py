@@ -57,6 +57,9 @@ DEFAULTS: dict[str, Any] = {
                 "{company} 客户 合作 订单",
             ],
             "results_per_query": 20,
+        # Read the result pages instead of keeping only the search summary.
+        # Costs no search quota — the URLs are already paid for.
+        "max_pages_fetched": 60,
             "max_results": 60,
             "chars_per_result": 220,
             # Snippets give the model nothing to preserve. Fetch the top
@@ -153,6 +156,9 @@ DEFAULTS: dict[str, Any] = {
         "provider": None,
         "max_queries": 6,
         "results_per_query": 20,
+        # Read the result pages instead of keeping only the search summary.
+        # Costs no search quota — the URLs are already paid for.
+        "max_pages_fetched": 60,
         "mode": 2,  # 0 web results, 1 VR cards, 2 mixed
         "freshness": None,  # e.g. "y2" for the last two years
         "site_filters": [None, "mp.weixin.qq.com"],

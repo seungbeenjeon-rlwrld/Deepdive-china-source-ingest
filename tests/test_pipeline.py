@@ -961,6 +961,104 @@ class TestListedEntityNeedsAControlRelationship(unittest.TestCase):
             "该公司为非上市企业，合作方包括均胜电子与长盈精密。"))
 
 
+class TestSweepReadsResultPages(unittest.TestCase):
+    """A search result left as it arrives is a pointer, not evidence.
+
+    Measured on the AgiBot sweep's 90 unrestricted results: reading the pages
+    took the channel from 12,695 chars to 65,831, a 5.2x increase, for no extra
+    search quota — the URLs were already paid for. 28 of 90 became full text;
+    the rest are gated hosts (WeChat, the registries), baijiahao which serves
+    网络不给力 to an automated request, or xueqiu behind its WAF.
+    """
+
+    def _harness(self):
+        h = Harness(MockProvider())
+        self.addCleanup(h.cleanup)
+        return h
+
+    def _record(self, url, snippet="요약"):
+        from src.models import SourceRecord
+
+        return SourceRecord(
+            source_id="S1", title="기사", retrieval_url=url,
+            content=snippet, content_access_status="SEARCH_SNIPPET_ONLY",
+            origin="provider_search",
+        )
+
+    def test_a_readable_page_becomes_full_text(self):
+        h = self._harness()
+        body = "智元机器人发布了新一代具身智能机器人。" * 30
+
+        class Page:
+            final_url = "http://news.example.cn/a"
+            text = body
+            blocked = False
+
+        h.pipeline._get_fetcher = lambda: type(
+            "F", (), {"fetch": staticmethod(lambda url: Page())}
+        )()
+        record = self._record("http://news.example.cn/a")
+        read = h.pipeline._read_bodies([record], 10)
+        self.assertEqual(read, 1)
+        self.assertEqual(record.content_access_status, "VERBATIM_FULL_TEXT")
+        self.assertEqual(record.content, body)
+
+    def test_gated_serp_and_video_urls_are_never_fetched(self):
+        h = self._harness()
+        tried = []
+
+        def fetch(url):
+            tried.append(url)
+            raise AssertionError(f"should not have fetched {url}")
+
+        h.pipeline._get_fetcher = lambda: type(
+            "F", (), {"fetch": staticmethod(fetch)}
+        )()
+        records = [
+            self._record("https://mp.weixin.qq.com/s/x"),
+            self._record("https://www.tianyancha.com/company/1"),
+            self._record("https://www.baidu.com/s?wd=x"),
+            self._record("https://m.bilibili.com/video/BV1"),
+        ]
+        self.assertEqual(h.pipeline._read_bodies(records, 10), 0)
+        self.assertEqual(tried, [])
+        self.assertTrue(all(r.content_access_status == "SEARCH_SNIPPET_ONLY"
+                            for r in records))
+
+    def test_the_limit_is_honoured(self):
+        h = self._harness()
+
+        class Page:
+            final_url = "http://x/a"
+            text = "본문" * 300
+            blocked = False
+
+        calls = []
+        h.pipeline._get_fetcher = lambda: type(
+            "F", (), {"fetch": staticmethod(
+                lambda url: calls.append(url) or Page())}
+        )()
+        records = [self._record(f"http://x/{i}") for i in range(6)]
+        self.assertEqual(h.pipeline._read_bodies(records, 2), 2)
+        self.assertEqual(len(calls), 2)
+
+    def test_a_blocked_page_keeps_its_snippet_and_records_why(self):
+        h = self._harness()
+
+        class Page:
+            final_url = "http://x/a"
+            text = "网络不给力，请稍后重试"
+            blocked = False
+
+        h.pipeline._get_fetcher = lambda: type(
+            "F", (), {"fetch": staticmethod(lambda url: Page())}
+        )()
+        record = self._record("http://baijiahao.baidu.com/s?id=1")
+        self.assertEqual(h.pipeline._read_bodies([record], 10), 0)
+        self.assertEqual(record.content_access_status, "SEARCH_SNIPPET_ONLY")
+        self.assertIn("fetch_error", record.extra)
+
+
 class TestPatentClaimsReplaceTheAbstract(unittest.TestCase):
     """The query endpoint returns the abstract; the claims are the operative text.
 
@@ -1725,9 +1823,20 @@ class TestRepostLabelling(unittest.TestCase):
 
         for url in ("https://www.baidu.com/s?tn=news&wd=x",
                     "https://www.google.com/search?q=x",
-                    "https://www.sogou.com/web?query=x"):
+                    "https://www.sogou.com/web?query=x",
+                    "https://so.toutiao.com/search?k=x"):
             self.assertTrue(_is_serp(url), url)
         self.assertFalse(_is_serp("https://www.cnr.cn/a/1.shtml"))
+
+    def test_an_article_url_that_looks_like_a_serp_is_kept(self):
+        """Substring matching on "baidu.com/s" also caught
+        baijiahao.baidu.com/s?id=..., a Baidu content-platform article — 27 of
+        167 records in one AgiBot sweep sit on that host. The check is anchored
+        on the host now."""
+        from src.collectors import _is_serp
+
+        self.assertFalse(_is_serp("https://baijiahao.baidu.com/s?id=1741"))
+        self.assertFalse(_is_serp("https://mbd.baidu.com/newspage/data/x"))
 
     def test_unresolvable_source_becomes_a_gap(self):
         from src.collectors import RepostResolver
