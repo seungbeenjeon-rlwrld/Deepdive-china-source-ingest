@@ -613,16 +613,24 @@ class Pipeline:
                     continue
                 if not found and self._is_throttled_failures(fails):
                     # If the endpoint is throttling, the remaining names will be
-                    # throttled too. Three more rounds of retries would only make
-                    # it worse and would report the same thing.
+                    # throttled too. More rounds of retries would only make it
+                    # worse and would report the same thing.
                     failures.append({
                         "assignee": name,
-                        "error": "throttled; remaining assignee names not queried",
+                        "error": "throttled by Google Patents; remaining "
+                                 "assignee names not queried",
+                        "retry": "python research.py --resume <run> --stage "
+                                 "channels --no-search-sweep  (spends no "
+                                 "search quota)",
                         "assignees_not_queried": assignees[position + 1:],
                     })
                     self._progress(
                         "      throttled by Google Patents — "
                         f"{len(assignees) - position - 1} name(s) not queried"
+                    )
+                    self._progress(
+                        "      retry later: --resume <run> --stage channels "
+                        "--no-search-sweep (no search quota)"
                     )
                     break
                 totals[name] = total

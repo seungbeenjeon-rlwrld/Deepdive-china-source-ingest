@@ -1321,6 +1321,76 @@ class TestSweepReadsResultPages(unittest.TestCase):
         self.assertIn("fetch_error", record.extra)
 
 
+class TestTransientServerErrorsAreRetried(unittest.TestCase):
+    """A 5xx from SerpApi is their hiccup, not a key or quota problem.
+
+    Measured on a UBTech run: one 503 on stock.10jqka.com.cn cost a whole
+    local-domain query while six other domains answered fine. Retrying has to
+    stay on the same key, or a second key's quota goes on the same request.
+    """
+
+    class Resp:
+        def __init__(self, code, text="{}"):
+            self.status_code = code
+            self.text = text
+
+        def json(self):
+            return json.loads(self.text)
+
+    def _client(self, responses):
+        """A client whose HTTP layer replays `responses`, last one repeating."""
+        import src.serpapi_client as mod
+        from src.config import SerpApiSettings
+
+        calls: list = []
+        slept: list = []
+
+        class FakeRequests:
+            class exceptions:
+                Timeout = TimeoutError
+                RequestException = Exception
+
+            @staticmethod
+            def get(url, params=None, timeout=None):
+                calls.append(params.get("api_key"))
+                return responses[min(len(calls) - 1, len(responses) - 1)]
+
+        real_requests = sys.modules.get("requests")
+        real_time = mod.time
+        sys.modules["requests"] = FakeRequests
+        mod.time = type("T", (), {"sleep": staticmethod(slept.append)})()
+        self.addCleanup(lambda: sys.modules.__setitem__("requests", real_requests))
+        self.addCleanup(lambda: setattr(mod, "time", real_time))
+
+        return mod.SerpApiClient(SerpApiSettings(api_keys=["k1", "k2"])), calls, slept
+
+    def test_a_503_retries_on_the_same_key_then_succeeds(self):
+        client, calls, slept = self._client([
+            self.Resp(503), self.Resp(503), self.Resp(200, '{"ok": 1}'),
+        ])
+        self.assertEqual(client.search({"q": "x"}), {"ok": 1})
+        self.assertEqual(calls, ["k1", "k1", "k1"],
+                         "a 5xx must not spend the second key")
+        self.assertEqual(len(slept), 2, "each retry waits")
+
+    def test_a_persistent_503_fails_with_a_hint(self):
+        from src.provider import ProviderError
+
+        client, _, _ = self._client([self.Resp(503)])
+        with self.assertRaises(ProviderError) as ctx:
+            client.search({"q": "x"})
+        self.assertIn("503", str(ctx.exception))
+        self.assertIn("SerpApi's side", ctx.exception.hint)
+
+    def test_a_429_still_rotates_to_the_next_key(self):
+        from src.provider import RateLimitError
+
+        client, calls, _ = self._client([self.Resp(429)])
+        with self.assertRaises(RateLimitError):
+            client.search({"q": "x"})
+        self.assertEqual(calls, ["k1", "k2"], "quota errors rotate, 5xx do not")
+
+
 class TestPatentClaimsReplaceTheAbstract(unittest.TestCase):
     """The query endpoint returns the abstract; the claims are the operative text.
 

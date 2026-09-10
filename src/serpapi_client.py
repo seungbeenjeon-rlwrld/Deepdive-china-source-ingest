@@ -20,6 +20,8 @@ structured search sweep.
 
 from __future__ import annotations
 
+import time
+
 from typing import Any, Optional
 
 from .config import SerpApiSettings
@@ -46,6 +48,11 @@ _FRESHNESS_DAYS = {
     "m": 30, "m1": 30, "m3": 90, "y": 365, "y1": 365, "y2": 730,
 }
 
+
+# A 5xx is SerpApi's own failure: retry the same key rather than rotating,
+# which would spend a second key's quota on the same request.
+_SERVER_ERROR_ATTEMPTS = 3
+_SERVER_ERROR_BACKOFF = 3.0
 
 # SerpApi answers an exhausted monthly quota with 429. Distinguishing that
 # from a bad key matters: one means "rotate", the other means "stop".
@@ -93,8 +100,9 @@ class SerpApiClient:
 
         self.log.debug("serpapi search: %s", {k: v for k, v in params.items()})
 
-        # One attempt per remaining key: a quota error rotates, anything else stops.
-        for _ in range(len(self._keys)):
+        # One attempt per remaining key, plus retries for SerpApi's own 5xx.
+        attempt = 0
+        for _ in range(len(self._keys) + _SERVER_ERROR_ATTEMPTS):
             payload = {**params, "api_key": self._keys[self._index]}
             try:
                 response = requests.get(
@@ -130,6 +138,27 @@ class SerpApiClient:
                     hint="Check plans at https://serpapi.com/dashboard, or add another "
                          "key as SERPAPI_KEY_2 in .env. The free tier is 250 "
                          "searches/month per account.",
+                )
+
+            if 500 <= response.status_code < 600:
+                # SerpApi's own hiccup, not a problem with the key or query, so
+                # rotating would waste a second key's quota on the same
+                # request. Measured: a lone 503 on stock.10jqka.com.cn cost a
+                # whole local-domain channel that had six other domains
+                # answering fine.
+                if attempt < _SERVER_ERROR_ATTEMPTS - 1:
+                    wait = _SERVER_ERROR_BACKOFF * (2 ** attempt)
+                    self.log.warning(
+                        "SerpApi returned HTTP %s — retrying in %.0fs",
+                        response.status_code, wait,
+                    )
+                    time.sleep(wait)
+                    attempt += 1
+                    continue
+                raise ProviderError(
+                    f"SerpApi returned HTTP {response.status_code} on "
+                    f"{_SERVER_ERROR_ATTEMPTS} attempts: {response.text[:200]}",
+                    hint="A 5xx is SerpApi's side. Re-run the channel later.",
                 )
 
             if response.status_code >= 400:

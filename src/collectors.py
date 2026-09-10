@@ -276,7 +276,14 @@ PATENTS_QUERY_URL = "https://patents.google.com/xhr/query"
 
 # Backoff base for the patents endpoint, in seconds. Module-level so tests can
 # zero it out instead of actually sleeping.
-PATENTS_BACKOFF_BASE = 2.0
+# Google Patents throttles a repeated caller. Backoff handles a burst; it does
+# not handle a sustained block, and that distinction was measured rather than
+# assumed — after a day of calls, 5 attempts spread over 2.5 minutes still got
+# 503 on every one. So the waits are sized for a burst (3s, 6s, 12s) and the
+# channel gives up quickly after that, reporting the throttle with a retry
+# command instead of spending minutes to fail anyway.
+PATENTS_BACKOFF_BASE = 3.0
+PATENTS_ATTEMPTS = 4
 
 
 def _strip_em(value: Optional[str]) -> Optional[str]:
@@ -716,7 +723,7 @@ class PatentCollector:
             # Google Patents throttles bursts with 503. Back off rather than
             # hammering it; a throttled run reports a failure, never a silent
             # empty result.
-            for attempt in range(3):
+            for attempt in range(PATENTS_ATTEMPTS):
                 try:
                     self.fetcher._throttle()
                     if attempt and PATENTS_BACKOFF_BASE:
