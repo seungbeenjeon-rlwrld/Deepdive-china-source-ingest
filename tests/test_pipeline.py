@@ -1105,6 +1105,60 @@ class TestAMalformedConfigIsNotIgnored(unittest.TestCase):
         self.assertEqual(config.search_sweep["max_pages_fetched"], 60)
 
 
+class TestIndexSummarisesTheChannels(unittest.TestCase):
+    """A reader should pick a channel without scanning every row.
+
+    A 322-source index runs to 49KB, so skimming the table alone costs about
+    12k tokens, and most questions only need one channel.
+    """
+
+    def _records(self):
+        from src.models import SourceRecord
+
+        return [
+            SourceRecord(source_id="F1", title="招股说明书 — 第一节",
+                         retrieval_url="http://f/1", content="본문" * 5000,
+                         content_access_status="HIGH_FIDELITY_EXTRACTION",
+                         origin="exchange_filing_text"),
+            SourceRecord(source_id="L1", title="中标公告",
+                         retrieval_url="http://l/1", content="요약" * 50,
+                         content_access_status="SEARCH_SNIPPET_ONLY",
+                         origin="local_domain_search"),
+            SourceRecord(source_id="L2", title="工商变更",
+                         retrieval_url="http://l/2", content="본문" * 400,
+                         content_access_status="VERBATIM_FULL_TEXT",
+                         origin="local_domain_search"),
+        ]
+
+    def test_channels_are_listed_largest_first_with_their_best_grade(self):
+        from src.reports import index_markdown
+
+        summary = index_markdown("X", self._records()).split("## Every source")[0]
+        self.assertIn("## What is here", summary)
+        filings = summary.index("exchange filings (full text)")
+        local = summary.index("Chinese local domains")
+        self.assertLess(filings, local, "biggest channel first")
+        # The best grade in a channel, not the worst or the first.
+        row = [l for l in summary.splitlines()
+               if "Chinese local domains" in l][0]
+        self.assertIn("VERBATIM_FULL_TEXT", row)
+        self.assertIn("| 2 |", row)
+
+    def test_origins_are_named_for_a_reader_not_the_code(self):
+        from src.reports import index_markdown
+
+        summary = index_markdown("X", self._records()).split("## Every source")[0]
+        self.assertNotIn("exchange_filing_text", summary)
+        self.assertNotIn("local_domain_search", summary)
+
+    def test_an_empty_corpus_still_renders(self):
+        from src.reports import index_markdown
+
+        out = index_markdown("X", [])
+        self.assertIn("Source index", out)
+        self.assertNotIn("## What is here", out)
+
+
 class TestOffSubjectResultsAreMarkedNotDropped(unittest.TestCase):
     """Measured both ways before choosing to mark rather than filter.
 
@@ -1128,7 +1182,10 @@ class TestOffSubjectResultsAreMarkedNotDropped(unittest.TestCase):
             content="요약", content_access_status="SEARCH_SNIPPET_ONLY",
             extra={"names_company": False},
         )
-        rows = [l for l in index_markdown("Unitree", [off, on]).splitlines()
+        out = index_markdown("Unitree", [off, on])
+        # Only the per-source table; the summary above it is also a table.
+        table = out.split("## Every source", 1)[1]
+        rows = [l for l in table.splitlines()
                 if l.startswith("| ") and "file |" not in l and "---" not in l]
         self.assertEqual(len(rows), 2)
         self.assertIn("| A |", rows[0], "on-subject sources come first")

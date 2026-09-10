@@ -136,6 +136,19 @@ def _names_markdown(company: str, result: dict[str, Any]) -> str:
         lines += ["", "## Raw model output", "", "```json", result["raw_text"], "```"]
     return "\n".join(lines) + "\n"
 
+# What each origin is, in the reader's terms rather than the code's.
+_CHANNEL_NAMES = {
+    "exchange_filing_text": "exchange filings (full text)",
+    "exchange_filing_registry": "exchange filings (PDF links)",
+    "patent_registry": "patents",
+    "local_domain_search": "Chinese local domains (procurement, 工商)",
+    "provider_search": "Baidu search",
+    "stage2_model_output": "stage 2 collection",
+    "repost_resolution": "reposts of gated originals",
+    "provider_citation": "provider citations",
+}
+
+
 def index_markdown(company: str, records: list[SourceRecord]) -> str:
     """One compact table of every source, strongest evidence first.
 
@@ -169,6 +182,38 @@ def index_markdown(company: str, records: list[SourceRecord]) -> str:
         "",
         "`off` marks a search result whose title and snippet never name the",
         "company — usually unrelated, occasionally a genuine industry piece.",
+        "",
+    ]
+
+    # A reader should be able to pick a channel without scanning every row.
+    # Measured: a 322-source index is 49KB, so the table alone costs ~12k
+    # tokens to skim, and most questions only need one channel.
+    by_origin: dict[str, list[SourceRecord]] = {}
+    for record in records:
+        by_origin.setdefault(record.origin or "unknown", []).append(record)
+    if by_origin:
+        lines += [
+            "## What is here",
+            "",
+            "| channel | sources | chars | strongest grade |",
+            "| --- | --- | --- | --- |",
+        ]
+        for origin, group in sorted(
+            by_origin.items(), key=lambda kv: -sum(len(r.content or "") for r in kv[1])
+        ):
+            chars = sum(len(r.content or "") for r in group)
+            best = min(
+                (r.content_access_status or "URL_ONLY" for r in group),
+                key=_grade_rank,
+            )
+            lines.append(
+                f"| {_CHANNEL_NAMES.get(origin, origin)} | {len(group)} | "
+                f"{chars:,} | {best} |"
+            )
+        lines.append("")
+
+    lines += [
+        "## Every source",
         "",
         "| file | grade | date | source | title | chars | dup | off |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",

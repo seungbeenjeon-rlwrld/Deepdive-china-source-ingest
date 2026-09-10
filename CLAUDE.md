@@ -37,8 +37,13 @@ research/{회사명}/{실행시각}/
 
 ### 읽는 순서
 
-1. **`00_INDEX.md`** — 소스 전체가 한 장에 정리되어 있음. 증거 등급 순으로 정렬되고
-   각 행이 `파일명 / 등급 / 날짜 / 출처 / 제목 / 글자수 / dup` 임.
+1. **`00_INDEX.md`** — 두 부분임.
+   - **`## What is here`** — 채널별 건수·글자수·최상위 등급 요약. **여기서 채널을
+     먼저 고를 것.** 322건 인덱스가 약 50KB 라 표를 훑는 것만으로 토큰이 나감
+   - **`## Every source`** — 증거 등급 순 전체 목록.
+     각 행이 `파일명 / 등급 / 날짜 / 출처 / 제목 / 글자수 / dup / off` 임.
+     `off` 는 제목·스니펫에 회사명이 없는 검색 결과로, 대개 무관하지만
+     간혹 회사명을 안 쓴 업계 분석임
    **여기서 읽을 파일을 고른 뒤 그 파일만 열 것.**
    `dup` 표시는 위에 이미 나온 사건의 중복 보도이므로, 두 번째 관점이 필요한
    경우가 아니면 건너뛸 것
@@ -200,7 +205,7 @@ python research.py --resume research/智元机器人/2026-09-04_034201 --stage 2
 
 ## 6. 코드를 수정할 때
 
-- 테스트를 먼저 확인할 것: `python -m unittest discover tests` (278개)
+- 테스트를 먼저 확인할 것: `python -m unittest discover tests` (281개)
 - 새 provider는 `ResearchProvider` 서브클래스 + `build_provider()` 등록.
   등록을 빼먹으면 CLI 선택지와 어긋나므로 `TestEveryAdvertisedProviderBuilds`
   가 잡아냄 (실제로 `claude-cli` 분기가 이렇게 사라진 적 있음)
