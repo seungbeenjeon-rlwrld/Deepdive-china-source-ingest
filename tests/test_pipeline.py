@@ -961,6 +961,58 @@ class TestListedEntityNeedsAControlRelationship(unittest.TestCase):
             "该公司为非上市企业，合作方包括均胜电子与长盈精密。"))
 
 
+class TestAMalformedConfigIsNotIgnored(unittest.TestCase):
+    """A config that exists but does not parse is not the same as no config.
+
+    A stray indent in config.yaml — mine, from an edit the same night — sent
+    search_sweep.provider back to the built-in None. The sweep then resolved
+    to the chat provider, reported "unsupported", and a verification run
+    finished without its largest channel while printing nothing unusual. Only
+    a log line said the file had been skipped.
+    """
+
+    def _write(self, text):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = directory / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_parse_error_raises_with_a_hint(self):
+        from src.config import ConfigError, load_config
+
+        path = self._write("search_sweep:\n  a: 1\n   bad: 2\n")
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(str(path))
+        self.assertIn("could not be parsed", str(ctx.exception))
+        self.assertIn("silently", ctx.exception.hint)
+
+    def test_a_non_mapping_root_raises(self):
+        from src.config import ConfigError, load_config
+
+        path = self._write("- just\n- a list\n")
+        with self.assertRaises(ConfigError):
+            load_config(str(path))
+
+    def test_a_valid_config_still_loads(self):
+        from src.config import load_config
+
+        path = self._write("provider: mock\nsearch_sweep:\n  max_queries: 3\n")
+        config = load_config(str(path))
+        self.assertEqual(config.provider, "mock")
+        self.assertEqual(config.search_sweep["max_queries"], 3)
+        # Unspecified keys still come from the defaults.
+        self.assertIn("site_filters", config.search_sweep)
+
+    def test_the_shipped_config_parses(self):
+        """The file in the repo must be valid, since every run reads it."""
+        from src.config import load_config
+
+        config = load_config(str(PROJECT_ROOT / "config.yaml"))
+        self.assertEqual(config.search_sweep["provider"], "serpapi")
+        self.assertEqual(config.search_sweep["max_pages_fetched"], 60)
+
+
 class TestSweepReadsResultPages(unittest.TestCase):
     """A search result left as it arrives is a pointer, not evidence.
 

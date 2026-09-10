@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import __version__
-from src.config import load_config
+from src.config import ConfigError, load_config
 from src.models import RunMetadata
 from src.pipeline import Pipeline, extract_recommended_queries
 from src.storage import LocalStorageBackend, STAGE1_JSON, STAGE1_MD, STAGE2_JSON
@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_config(args.config, project_root=PROJECT_ROOT)
-    except (FileNotFoundError, ValueError) as exc:
+    except (ConfigError, FileNotFoundError, ValueError) as exc:
         report_error(exc)
         return 2
 

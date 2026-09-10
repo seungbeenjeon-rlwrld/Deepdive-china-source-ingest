@@ -13,6 +13,20 @@ from typing import Any
 
 from .utils import get_logger
 
+
+class ConfigError(RuntimeError):
+    """A config file the operator wrote that the run cannot honour.
+
+    Same shape as ProviderError so research.py's reporter prints the hint.
+    """
+
+    hint: str = ""
+
+    def __init__(self, message: str, hint: str = "") -> None:
+        super().__init__(message)
+        if hint:
+            self.hint = hint
+
 DEFAULTS: dict[str, Any] = {
     "provider": "claude-cli",
     "output": {
@@ -297,8 +311,21 @@ def load_config(path: str | Path | None = None, project_root: Path | None = None
             log.debug("loaded config from %s", candidate)
         except ImportError:
             log.warning("PyYAML not installed — using built-in defaults for config")
-        except Exception as exc:  # malformed YAML should not be fatal
-            log.warning("could not parse %s (%s) — using built-in defaults", candidate, exc)
+        except Exception as exc:
+            # A config file that exists but does not parse is a different thing
+            # from no config file at all: the operator wrote settings and the
+            # run is about to ignore every one of them. Falling back with only
+            # a log line hid exactly that — a stray indent in config.yaml sent
+            # search_sweep.provider back to the built-in None, so the sweep
+            # resolved to the chat provider, reported "unsupported", and a
+            # verification run finished without its largest channel while
+            # printing nothing unusual.
+            raise ConfigError(
+                f"{candidate} exists but could not be parsed: {exc}",
+                hint="Fix the file, or move it aside to run on built-in "
+                     "defaults. It is not ignored silently because every "
+                     "setting in it would be.",
+            ) from exc
     elif path:
         raise FileNotFoundError(f"config file not found: {candidate}")
 
