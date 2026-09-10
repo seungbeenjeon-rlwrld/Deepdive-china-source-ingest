@@ -960,24 +960,45 @@ class Pipeline:
         # loses most of the portfolio, and which one stage 0 ranks first is
         # luck. So query every legal-entity name it found and merge.
         #
-        # Legal-entity forms only, deliberately. A bare brand name like 宇树科技
-        # returns 276, but an assignee field holds a registered entity, so a
-        # brand-string match may pull in unrelated companies — and that cannot
-        # be verified cheaply. Precision over reach where the corpus is the
-        # thing being protected.
+        # Legal-entity names first, then the Chinese brand name.
+        #
+        # The brand name was excluded at first, on the reasoning that a bare
+        # 宇树科技 returns 276 and might pull in unrelated companies. That was
+        # calibrated against the old q= full-text query. With assignee= the
+        # field itself is matched, and the measurement is different:
+        # assignee="宇树科技" returns 188, every one assigned to
+        # 杭州宇树科技有限公司. The record-level check still drops anything whose
+        # assignee is not the entity asked for.
+        #
+        # It matters because stage 0's output varies between runs. One Unitree
+        # run offered 杭州宇树科技有限公司 (131 patents) and the next offered
+        # 杭州宇树科技股份有限公司 (33) and 上海宇树科技有限公司 (0), so the
+        # portfolio swung 131 to 33 on nothing but name ordering. The brand
+        # name catches every legal variant at once and steadies that.
         assignees: list[str] = []
         for entry in chosen:
             name = str(entry.get("name") or "").strip()
             if name and _is_legal_entity(name) and name not in assignees:
+                assignees.append(name)
+        for name in (names_meta.get("search_names") or []):
+            name = str(name or "").strip()
+            if (name and name not in assignees
+                    and any("\u4e00" <= c <= "\u9fff" for c in name)
+                    and "合伙" not in name):
                 assignees.append(name)
 
         if assignees:
             derived["patent_assignees"] = assignees
             # Kept for callers and configs that pass a single name.
             derived["patent_assignee"] = assignees[0]
+            # `chosen` can be empty while `assignees` is not: the brand name
+            # comes from search_names, not from the legal-entity list.
+            confidence = chosen[0].get("confidence") if chosen else "n/a"
+            legal = sum(1 for a in assignees if _is_legal_entity(a))
             derived["evidence"]["patent_assignee"] = (
-                f"stage 0 legal_entity names ({len(assignees)}), "
-                f"confidence={chosen[0].get('confidence')}"
+                f"stage 0 names: {legal} legal entity, "
+                f"{len(assignees) - legal} brand/short "
+                f"(confidence={confidence})"
             )
 
         # 2) Listed entity. Scraping a name out of prose kept producing sentence

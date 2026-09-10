@@ -327,6 +327,11 @@ def _clean_assignee(value: str) -> str:
     return re.sub(r"<[^>]+>|[▲▼]", "", value or "").strip()
 
 
+def _is_design_patent(publication_number: str) -> bool:
+    """CN + digits + S is a 外观设计 patent: drawings, no claims text."""
+    return bool(re.fullmatch(r"CN\d+S", (publication_number or "").strip(), re.I))
+
+
 def _assignee_matches(got: str, asked: str) -> bool:
     """Is this patent assigned to the entity we queried?
 
@@ -883,10 +888,17 @@ class PatentCollector:
                 continue
 
             if len(claims) < 200:
+                number = str((record.extra or {}).get("publication_number") or "")
+                if _is_design_patent(number):
+                    # A 外观设计 patent protects an appearance, so it has
+                    # drawings and no claims text. Reporting that as a failure
+                    # filled the failures list with correct behaviour.
+                    record.extra = {**(record.extra or {}), "content_is": "abstract",
+                                    "patent_kind": "design"}
+                    continue
                 failures.append({
                     "stage": "patent_claims",
-                    "publication_number": (record.extra or {}).get(
-                        "publication_number"),
+                    "publication_number": number,
                     "error": f"claims too short to be real ({len(claims)} chars); "
                              "abstract kept",
                 })

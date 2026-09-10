@@ -1248,6 +1248,23 @@ class TestPatentClaimsReplaceTheAbstract(unittest.TestCase):
         # Nothing is thrown away.
         self.assertEqual(record.extra["abstract"], "초록 원문")
 
+    def test_a_design_patent_keeps_its_abstract_without_a_failure(self):
+        from src.models import SourceRecord
+
+        record = SourceRecord(
+            source_id="P1", title="外观设计", retrieval_url="http://p/1",
+            canonical_url="http://p/1", content="초록",
+            content_access_status="SEARCH_SNIPPET_ONLY",
+            origin="patent_registry",
+            extra={"publication_number": "CN309506021S"},
+        )
+        collector = self._collector()
+        with fake_requests(get=lambda *a, **k: _Resp("<div></div>")):
+            failures = collector._add_claims([record])
+        self.assertEqual(failures, [])
+        self.assertEqual(record.content, "초록")
+        self.assertEqual(record.extra["patent_kind"], "design")
+
     def test_a_stub_page_keeps_the_abstract(self):
         record = self._record(content="초록 원문")
         with fake_requests(get=lambda *a, **k: _Resp('<div class="claim-text">짧음</div>')):
@@ -1313,6 +1330,15 @@ class TestPatentsMustBeAssignedToTheTarget(unittest.TestCase):
         self.assertFalse(_assignee_matches("普元信息技术股份有限公司", "智元机器人"))
         self.assertFalse(_assignee_matches(
             "深圳市大疆创新科技有限公司", "杭州宇树科技有限公司"))
+
+    def test_a_design_patent_has_no_claims_and_that_is_not_a_failure(self):
+        """CN...S protects an appearance: drawings, no claims text. Reporting
+        it as a failure filled the failures list with correct behaviour."""
+        from src.collectors import _is_design_patent
+
+        self.assertTrue(_is_design_patent("CN309506021S"))
+        self.assertFalse(_is_design_patent("CN109941369B"))
+        self.assertFalse(_is_design_patent("CN206313598U"))
 
     def test_a_missing_assignee_is_kept(self):
         """The assignee= query already filtered; absence is not evidence."""
@@ -1595,28 +1621,55 @@ class TestPatentsCoverEveryAssigneeName(unittest.TestCase):
             {"name": "杭州天则合伙企业", "type": "legal_entity",
              "confidence": "medium"},
         ],
+        "search_names": [
+            "宇树科技", "杭州宇树科技股份有限公司", "杭州宇树科技有限公司",
+        ],
     }
 
     def test_every_legal_entity_name_is_derived(self):
         h = _derivation_harness()
         try:
             d = h.pipeline.derive_channels(self.NAMES, "")
+            # Legal entities first, then the brand name — see
+            # test_the_brand_name_is_queried_too for why the brand is included.
             self.assertEqual(
-                d["patent_assignees"],
+                d["patent_assignees"][:2],
                 ["杭州宇树科技股份有限公司", "杭州宇树科技有限公司"],
             )
+            self.assertIn("宇树科技", d["patent_assignees"])
             # Back-compat for single-name callers and config.
             self.assertEqual(d["patent_assignee"], "杭州宇树科技股份有限公司")
         finally:
             h.cleanup()
 
-    def test_a_bare_brand_name_is_not_queried(self):
-        """宇树科技 returns 276 patents, but a brand string can match
-        unrelated companies and that cannot be verified cheaply."""
+    def test_the_brand_name_is_queried_too(self):
+        """It was excluded at first, reasoning that a bare 宇树科技 returns 276
+        and might pull in unrelated companies. That was calibrated against the
+        old q= full-text query; assignee="宇树科技" returns 188, all assigned to
+        杭州宇树科技有限公司.
+
+        It matters because stage 0's output varies between runs. One Unitree
+        run offered 杭州宇树科技有限公司 (131 patents) and the next offered
+        杭州宇树科技股份有限公司 (33) and 上海宇树科技有限公司 (0). Live, adding
+        the brand name took that second combination from 25 patents to 77, with
+        no unrelated assignee among them.
+        """
         h = _derivation_harness()
         try:
             d = h.pipeline.derive_channels(self.NAMES, "")
-            self.assertNotIn("宇树科技", d["patent_assignees"])
+            self.assertIn("宇树科技", d["patent_assignees"])
+            # Legal entities still come first.
+            self.assertTrue(d["patent_assignees"][0].endswith("有限公司"))
+        finally:
+            h.cleanup()
+
+    def test_a_partnership_name_is_never_an_assignee(self):
+        h = _derivation_harness()
+        try:
+            d = h.pipeline.derive_channels(
+                {**self.NAMES, "search_names": ["宇树科技", "杭州天则合伙企业"]}, ""
+            )
+            self.assertNotIn("杭州天则合伙企业", d["patent_assignees"])
         finally:
             h.cleanup()
 
