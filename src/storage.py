@@ -20,6 +20,20 @@ from typing import Any, Optional
 from .models import RunMetadata, SourceRecord
 from .utils import get_logger, run_timestamp, slugify
 
+
+class StorageError(RuntimeError):
+    """A run directory the tool cannot safely act on.
+
+    Same shape as ProviderError so research.py's reporter prints the hint.
+    """
+
+    hint: str = ""
+
+    def __init__(self, message: str, hint: str = "") -> None:
+        super().__init__(message)
+        if hint:
+            self.hint = hint
+
 METADATA_FILE = "metadata.json"
 STAGE1_MD = "01_entity_discovery.md"
 STAGE1_JSON = "01_entity_discovery.json"
@@ -207,8 +221,18 @@ class LocalStorageBackend(StorageBackend):
         try:
             return self.read_json(METADATA_FILE)
         except (ValueError, OSError) as exc:
-            self.log.warning("could not read %s: %s", METADATA_FILE, exc)
-            return None
+            # No metadata at all means a fresh run, which is fine. Metadata
+            # that exists and cannot be read is not fine: --resume decides
+            # whether a completed stage 2 may be overwritten by reading
+            # stage2_status from here, and returning None made that read
+            # "not completed" — so a corrupt file silently unlocked the very
+            # overwrite the guard exists to prevent. This project has already
+            # destroyed one finished stage 2 that way.
+            raise StorageError(
+                f"{self._path(METADATA_FILE)} exists but could not be read: {exc}",
+                hint="Fix or remove the file. It is not skipped, because the "
+                     "overwrite guard reads the run's state from it.",
+            ) from exc
 
 
 _MD_HEADER_SENTINEL = "<!-- BEGIN PROVIDER OUTPUT -->"

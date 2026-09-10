@@ -961,6 +961,98 @@ class TestListedEntityNeedsAControlRelationship(unittest.TestCase):
             "该公司为非上市企业，合作方包括均胜电子与长盈精密。"))
 
 
+class TestNoChannelIsLeftRunning(unittest.TestCase):
+    """A finished run must not claim a channel is still going.
+
+    Every channel set its status to "running" before working and to a terminal
+    value after. An exception in between left "running" on disk for good —
+    measured, a cninfo outage produced filings_status "running", which reads
+    as unfinished work rather than an outage.
+    """
+
+    def _pipeline(self):
+        h = Harness(MockProvider())
+        self.addCleanup(h.cleanup)
+        return h
+
+    def test_a_collector_exception_records_failed_on_disk(self):
+        h = self._pipeline()
+        import src.pipeline as mod
+
+        def boom(*_a, **_k):
+            class C:
+                @staticmethod
+                def collect(*_a, **_k):
+                    raise RuntimeError("endpoint down")
+            return C()
+
+        original = mod.ExchangeFilingCollector
+        mod.ExchangeFilingCollector = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                h.pipeline.run_exchange_filings("X", "宇树科技")
+        finally:
+            mod.ExchangeFilingCollector = original
+
+        self.assertEqual(h.metadata.filings_status, "failed")
+        on_disk = json.loads(
+            (h.run_dir / "metadata.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(on_disk["filings_status"], "failed")
+        self.assertTrue(any("exchange filings failed" in n
+                            for n in on_disk.get("notes") or []))
+
+    def test_every_running_status_has_a_failed_path(self):
+        """Pins the invariant rather than one channel."""
+        import re
+
+        source = (PROJECT_ROOT / "src" / "pipeline.py").read_text(encoding="utf-8")
+        wrapped = set(re.findall(r'_channel\("(\w+_status)"', source))
+        raw = set(re.findall(r'metadata\.(\w+_status) = "running"', source))
+        # Anything still setting "running" by hand must set "failed" too.
+        for field in raw - wrapped:
+            self.assertIn(
+                f'{field} = "failed"', source,
+                f"{field} can be left running with no failed path",
+            )
+
+
+class TestARegistryOutageIsNotAnEmptyResult(unittest.TestCase):
+    """An unreachable registry is not a company with nothing on file."""
+
+    def test_a_probe_error_is_reported_as_such(self):
+        h = Harness(MockProvider())
+        try:
+            h.config.research = {
+                **h.config.research,
+                "derive_channels": {"enabled": True, "probe_filings": True},
+            }
+            import src.collectors as mod
+
+            def boom(*_a, **_k):
+                class C:
+                    @staticmethod
+                    def collect(*_a, **_k):
+                        raise RuntimeError("cninfo 504")
+                return C()
+
+            original = mod.ExchangeFilingCollector
+            mod.ExchangeFilingCollector = boom
+            try:
+                derived = h.pipeline.derive_channels(
+                    {"search_names": ["宇树科技"]}, ""
+                )
+            finally:
+                mod.ExchangeFilingCollector = original
+
+            self.assertIsNone(derived["filings_search_key"])
+            self.assertIn("did not answer",
+                          derived["evidence"]["filings_search_key"])
+            self.assertEqual(len(derived["filings_probe_errors"]), 1)
+        finally:
+            h.cleanup()
+
+
 class TestAMalformedConfigIsNotIgnored(unittest.TestCase):
     """A config that exists but does not parse is not the same as no config.
 

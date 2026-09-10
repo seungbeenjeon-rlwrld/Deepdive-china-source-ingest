@@ -12,6 +12,7 @@ Stage 1 output is never summarised, trimmed or re-ordered before injection.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -123,6 +124,28 @@ class Pipeline:
         # Every source written in this run, so duplicates can be merged and the
         # index rebuilt without re-reading the directory.
         self._saved: list[SourceRecord] = []
+        # Registry probes that failed for a reason other than "not listed".
+        self._probe_errors: list[dict[str, Any]] = []
+
+    @contextlib.contextmanager
+    def _channel(self, status_field: str, label: str):
+        """Mark a channel running, and never leave it that way.
+
+        Each channel set its own status to "running" before working and to a
+        terminal value after. An exception in between left "running" behind:
+        a finished run whose metadata says a channel is still going. Measured
+        — a cninfo outage produced filings_status "running" for good, which
+        reads as unfinished work rather than an outage.
+        """
+        setattr(self.metadata, status_field, "running")
+        self.storage.write_metadata(self.metadata)
+        try:
+            yield
+        except Exception as exc:
+            setattr(self.metadata, status_field, "failed")
+            self.metadata.notes.append(f"{label} failed: {exc}")
+            self.storage.write_metadata(self.metadata)
+            raise
 
     def _get_fetcher(self) -> Fetcher:
         if self._fetcher is None:
@@ -273,95 +296,94 @@ class Pipeline:
         # in Chinese, so an English query returns nothing useful.
         name = self._best_chinese_name(names_meta) or company
         self._progress(f"[+] Searching {len(domains)} Chinese local domains for {name}...")
-        self.metadata.local_sources_status = "running"
-        self.storage.write_metadata(self.metadata)
+        with self._channel("local_sources_status", "local domain search"):
 
-        # Every Chinese name stage 0 found, so a hit naming the full legal
-        # entity is kept even though the query used the short form.
-        names = [
-            n for n in (names_meta.get("search_names") or [])
-            if n and any("\u4e00" <= c <= "\u9fff" for c in n)
-        ] or [name]
+            # Every Chinese name stage 0 found, so a hit naming the full legal
+            # entity is kept even though the query used the short form.
+            names = [
+                n for n in (names_meta.get("search_names") or [])
+                if n and any("\u4e00" <= c <= "\u9fff" for c in n)
+            ] or [name]
 
-        per_domain = int(cfg.get("results_per_domain", 20))
-        records: list[SourceRecord] = []
-        failures: list[dict[str, Any]] = []
-        raw: list[dict[str, Any]] = []
-        by_domain: dict[str, int] = {}
-        off_topic: dict[str, int] = {}
+            per_domain = int(cfg.get("results_per_domain", 20))
+            records: list[SourceRecord] = []
+            failures: list[dict[str, Any]] = []
+            raw: list[dict[str, Any]] = []
+            by_domain: dict[str, int] = {}
+            off_topic: dict[str, int] = {}
 
-        for domain in domains:
-            query = f"site:{domain} {name}"
-            try:
-                result = searcher.search(query, count=per_domain)
-            except Exception as exc:
-                failures.append({"domain": domain, "query": query, "error": str(exc)})
-                self._progress(f"      {domain}: failed ({exc})")
-                continue
-            if result.get("raw"):
-                raw.append({"domain": domain, "query": query, "response": result["raw"]})
-
-            found = dropped = 0
-            for page in result.get("pages") or []:
-                record = _record_from_page(page, company, query=query, site=domain)
-                record.origin = "local_domain_search"
-                record.extra = {**record.extra, "local_domain": domain}
-                if not _mentions_any(record, names):
-                    dropped += 1
+            for domain in domains:
+                query = f"site:{domain} {name}"
+                try:
+                    result = searcher.search(query, count=per_domain)
+                except Exception as exc:
+                    failures.append({"domain": domain, "query": query, "error": str(exc)})
+                    self._progress(f"      {domain}: failed ({exc})")
                     continue
-                records.append(record)
-                found += 1
-            by_domain[domain] = found
-            off_topic[domain] = dropped
-            note = f" ({dropped} off-topic dropped)" if dropped else ""
-            self._progress(f"      {domain}: {found}{note}")
+                if result.get("raw"):
+                    raw.append({"domain": domain, "query": query, "response": result["raw"]})
 
-        # Public pages get their bodies read; gated registries never do.
-        fetched = self._read_bodies(records, int(cfg.get("max_pages_fetched", 20)))
+                found = dropped = 0
+                for page in result.get("pages") or []:
+                    record = _record_from_page(page, company, query=query, site=domain)
+                    record.origin = "local_domain_search"
+                    record.extra = {**record.extra, "local_domain": domain}
+                    if not _mentions_any(record, names):
+                        dropped += 1
+                        continue
+                    records.append(record)
+                    found += 1
+                by_domain[domain] = found
+                off_topic[domain] = dropped
+                note = f" ({dropped} off-topic dropped)" if dropped else ""
+                self._progress(f"      {domain}: {found}{note}")
 
-        payload = {
-            "target_company": company,
-            "search_name": name,
-            "domains": domains,
-            "results_by_domain": by_domain,
-            "off_topic_dropped_by_domain": off_topic,
-            "results_total": len(records),
-            "bodies_fetched": fetched,
-            "failures": failures,
-            "sources": [r.to_dict() for r in records],
-            "generated_at": utc_now_iso(),
-            "note": (
-                "Chinese domains a general web search covers poorly, searched one "
-                "query each through the Baidu index. Registry hosts (天眼查, 企查查, "
-                "爱企查 …) are gated: their pages are never fetched, so the indexed "
-                "title and snippet are the evidence and are labelled "
-                "SEARCH_SNIPPET_ONLY. Procurement notices on ccgp.gov.cn are public "
-                "and have their text preserved. A `site:` query is a full-text "
-                "search, so results that never mention the company are dropped: "
-                "measured on 逐际动力, all 14 ccgp.gov.cn hits were documents "
-                "containing the common word 动力 and none named the company."
-            ),
-        }
-        if self.config.output.get("save_json", True):
-            self.storage.save_json(LOCAL_JSON, payload)
-        if self.config.output.get("save_markdown", True):
-            self.storage.save(LOCAL_MD, _records_markdown(
-                f"Stage 8 — Chinese Local Domains: {name}", payload, records))
-        if raw and self.config.output.get("save_raw_responses", True):
-            self.storage.save_json("raw_local_sources_responses.json", raw)
-        self._persist_records(records)
+            # Public pages get their bodies read; gated registries never do.
+            fetched = self._read_bodies(records, int(cfg.get("max_pages_fetched", 20)))
 
-        self.metadata.local_sources_status = (
-            "completed" if not failures else "completed_with_errors"
-        )
-        self.metadata.counts["local_domain_results"] = len(records)
-        self.metadata.counts["local_domain_bodies"] = fetched
-        self.storage.write_metadata(self.metadata)
-        self._progress(
-            f"✓ {len(records)} results from Chinese local domains "
-            f"({fetched} read in full)"
-        )
-        return payload
+            payload = {
+                "target_company": company,
+                "search_name": name,
+                "domains": domains,
+                "results_by_domain": by_domain,
+                "off_topic_dropped_by_domain": off_topic,
+                "results_total": len(records),
+                "bodies_fetched": fetched,
+                "failures": failures,
+                "sources": [r.to_dict() for r in records],
+                "generated_at": utc_now_iso(),
+                "note": (
+                    "Chinese domains a general web search covers poorly, searched one "
+                    "query each through the Baidu index. Registry hosts (天眼查, 企查查, "
+                    "爱企查 …) are gated: their pages are never fetched, so the indexed "
+                    "title and snippet are the evidence and are labelled "
+                    "SEARCH_SNIPPET_ONLY. Procurement notices on ccgp.gov.cn are public "
+                    "and have their text preserved. A `site:` query is a full-text "
+                    "search, so results that never mention the company are dropped: "
+                    "measured on 逐际动力, all 14 ccgp.gov.cn hits were documents "
+                    "containing the common word 动力 and none named the company."
+                ),
+            }
+            if self.config.output.get("save_json", True):
+                self.storage.save_json(LOCAL_JSON, payload)
+            if self.config.output.get("save_markdown", True):
+                self.storage.save(LOCAL_MD, _records_markdown(
+                    f"Stage 8 — Chinese Local Domains: {name}", payload, records))
+            if raw and self.config.output.get("save_raw_responses", True):
+                self.storage.save_json("raw_local_sources_responses.json", raw)
+            self._persist_records(records)
+
+            self.metadata.local_sources_status = (
+                "completed" if not failures else "completed_with_errors"
+            )
+            self.metadata.counts["local_domain_results"] = len(records)
+            self.metadata.counts["local_domain_bodies"] = fetched
+            self.storage.write_metadata(self.metadata)
+            self._progress(
+                f"✓ {len(records)} results from Chinese local domains "
+                f"({fetched} read in full)"
+            )
+            return payload
 
     def _name_resolution_failed(
         self, company: str, why: str, *, raw_text: Optional[str]
@@ -463,62 +485,61 @@ class Pipeline:
     # -- primary-source registries (prompt 2 §10 priorities 1 and 5) --------
     def run_exchange_filings(self, company: str, search_key: str) -> dict[str, Any]:
         self._progress(f"[+] Fetching exchange filings for {search_key}...")
-        self.metadata.filings_status = "running"
-        self.storage.write_metadata(self.metadata)
+        with self._channel("filings_status", "exchange filings"):
 
-        cfg = self.config.registries
-        records, failures = ExchangeFilingCollector(self._get_fetcher()).collect(
-            company, search_key,
-            max_records=int(cfg.get("max_filings", 60)),
-            extract_text=bool(cfg.get("extract_filing_text", True)),
-            max_pdf_bytes=int(cfg.get("max_pdf_mb", 40)) * 1_048_576,
-            max_section_chars=int(cfg.get("max_section_chars", 40000)),
-        )
-        # Two kinds of record come back: one per filing, plus one per section
-        # of the primary documents whose text was extracted. Reporting the sum
-        # as a filing count would overstate how many filings exist.
-        texts = [r for r in records if r.origin == "exchange_filing_text"]
-        filings = [r for r in records if r.origin != "exchange_filing_text"]
-        text_chars = sum(len(r.content or "") for r in texts)
-        payload = {
-            "target_company": company,
-            "search_key": search_key,
-            "filings_collected": len(filings),
-            "filing_text_sections": len(texts),
-            "filing_text_chars": text_chars,
-            "failures": failures,
-            "sources": [r.to_dict() for r in records],
-            "generated_at": utc_now_iso(),
-            "endpoint": CNINFO_QUERY_URL,
-            "note": (
-                "Exchange/regulatory disclosures from 巨潮资讯网. Prompt 2 §10 priority 1 — "
-                "these carry legal liability and settle what media only paraphrase. Each "
-                "record keeps a DIRECT_DOCUMENT_URL to the PDF. Primary documents "
-                "(招股说明书, 公司章程, 上市公告书 …) additionally have their text "
-                "extracted section by section, because no chat-side fetch decodes a "
-                "cninfo PDF; those records carry origin exchange_filing_text and "
-                "HIGH_FIDELITY_EXTRACTION."
-            ),
-        }
-        if self.config.output.get("save_json", True):
-            self.storage.save_json(FILINGS_JSON, payload)
-        if self.config.output.get("save_markdown", True):
-            self.storage.save(FILINGS_MD, _records_markdown(
-                f"Stage 6 — Exchange Filings: {search_key}", payload, records))
-        self._persist_records(records)
-
-        self.metadata.filings_status = "completed" if not failures else "completed_with_errors"
-        self.metadata.counts["exchange_filings"] = len(filings)
-        self.metadata.counts["filing_text_sections"] = len(texts)
-        self.metadata.counts["filing_text_chars"] = text_chars
-        self.storage.write_metadata(self.metadata)
-        self._progress(f"✓ Indexed {len(filings)} exchange filings with direct PDF links")
-        if texts:
-            self._progress(
-                f"✓ Extracted {text_chars:,} chars of filing text "
-                f"in {len(texts)} sections"
+            cfg = self.config.registries
+            records, failures = ExchangeFilingCollector(self._get_fetcher()).collect(
+                company, search_key,
+                max_records=int(cfg.get("max_filings", 60)),
+                extract_text=bool(cfg.get("extract_filing_text", True)),
+                max_pdf_bytes=int(cfg.get("max_pdf_mb", 40)) * 1_048_576,
+                max_section_chars=int(cfg.get("max_section_chars", 40000)),
             )
-        return payload
+            # Two kinds of record come back: one per filing, plus one per section
+            # of the primary documents whose text was extracted. Reporting the sum
+            # as a filing count would overstate how many filings exist.
+            texts = [r for r in records if r.origin == "exchange_filing_text"]
+            filings = [r for r in records if r.origin != "exchange_filing_text"]
+            text_chars = sum(len(r.content or "") for r in texts)
+            payload = {
+                "target_company": company,
+                "search_key": search_key,
+                "filings_collected": len(filings),
+                "filing_text_sections": len(texts),
+                "filing_text_chars": text_chars,
+                "failures": failures,
+                "sources": [r.to_dict() for r in records],
+                "generated_at": utc_now_iso(),
+                "endpoint": CNINFO_QUERY_URL,
+                "note": (
+                    "Exchange/regulatory disclosures from 巨潮资讯网. Prompt 2 §10 priority 1 — "
+                    "these carry legal liability and settle what media only paraphrase. Each "
+                    "record keeps a DIRECT_DOCUMENT_URL to the PDF. Primary documents "
+                    "(招股说明书, 公司章程, 上市公告书 …) additionally have their text "
+                    "extracted section by section, because no chat-side fetch decodes a "
+                    "cninfo PDF; those records carry origin exchange_filing_text and "
+                    "HIGH_FIDELITY_EXTRACTION."
+                ),
+            }
+            if self.config.output.get("save_json", True):
+                self.storage.save_json(FILINGS_JSON, payload)
+            if self.config.output.get("save_markdown", True):
+                self.storage.save(FILINGS_MD, _records_markdown(
+                    f"Stage 6 — Exchange Filings: {search_key}", payload, records))
+            self._persist_records(records)
+
+            self.metadata.filings_status = "completed" if not failures else "completed_with_errors"
+            self.metadata.counts["exchange_filings"] = len(filings)
+            self.metadata.counts["filing_text_sections"] = len(texts)
+            self.metadata.counts["filing_text_chars"] = text_chars
+            self.storage.write_metadata(self.metadata)
+            self._progress(f"✓ Indexed {len(filings)} exchange filings with direct PDF links")
+            if texts:
+                self._progress(
+                    f"✓ Extracted {text_chars:,} chars of filing text "
+                    f"in {len(texts)} sections"
+                )
+            return payload
 
     @staticmethod
     def _is_throttled_failures(fails: list[dict[str, Any]]) -> bool:
@@ -543,105 +564,104 @@ class Pipeline:
         label = assignees[0] + (f" (+{len(assignees) - 1} more)"
                                 if len(assignees) > 1 else "")
         self._progress(f"[+] Fetching patents for {label}...")
-        self.metadata.patents_status = "running"
-        self.storage.write_metadata(self.metadata)
+        with self._channel("patents_status", "patents"):
 
-        cfg = self.config.registries
-        cap = int(cfg.get("max_patents", 60))
-        collector = PatentCollector(self._get_fetcher())
-        records: list[SourceRecord] = []
-        failures: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        totals: dict[str, Any] = {}
+            cfg = self.config.registries
+            cap = int(cfg.get("max_patents", 60))
+            collector = PatentCollector(self._get_fetcher())
+            records: list[SourceRecord] = []
+            failures: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            totals: dict[str, Any] = {}
 
-        for position, name in enumerate(assignees):
-            if len(records) >= cap:
-                break
-            if position:
-                # Querying several names multiplies the load on an endpoint
-                # that throttles bursts, so space the queries out.
-                time.sleep(float(cfg.get("patent_query_gap_seconds", 3)))
-            try:
-                found, fails, total = collector.collect(
-                    company, name, max_records=cap - len(records),
-                    claims_for=int(cfg.get("patent_claims_for", 20)),
-                )
-            except Exception as exc:
-                failures.append({"assignee": name, "error": str(exc)})
-                continue
-            if not found and self._is_throttled_failures(fails):
-                # If the endpoint is throttling, the remaining names will be
-                # throttled too. Three more rounds of retries would only make
-                # it worse and would report the same thing.
-                failures.append({
-                    "assignee": name,
-                    "error": "throttled; remaining assignee names not queried",
-                    "assignees_not_queried": assignees[position + 1:],
-                })
-                self._progress(
-                    "      throttled by Google Patents — "
-                    f"{len(assignees) - position - 1} name(s) not queried"
-                )
-                break
-            totals[name] = total
-            for fail in fails:
-                failures.append({**fail, "assignee": name})
-            fresh = 0
-            for record in found:
-                # The same patent can be filed under both the old and the new
-                # name. Merge on the publication number and note every name it
-                # was found under — that agreement is itself a signal.
-                number = str((record.extra or {}).get("publication_number") or "")
-                if number and number in seen:
+            for position, name in enumerate(assignees):
+                if len(records) >= cap:
+                    break
+                if position:
+                    # Querying several names multiplies the load on an endpoint
+                    # that throttles bursts, so space the queries out.
+                    time.sleep(float(cfg.get("patent_query_gap_seconds", 3)))
+                try:
+                    found, fails, total = collector.collect(
+                        company, name, max_records=cap - len(records),
+                        claims_for=int(cfg.get("patent_claims_for", 20)),
+                    )
+                except Exception as exc:
+                    failures.append({"assignee": name, "error": str(exc)})
                     continue
-                if number:
-                    seen.add(number)
-                record.extra = {**(record.extra or {}), "found_under": name}
-                records.append(record)
-                fresh += 1
-            self._progress(f"      {name}: {fresh} new (endpoint reports {total})")
+                if not found and self._is_throttled_failures(fails):
+                    # If the endpoint is throttling, the remaining names will be
+                    # throttled too. Three more rounds of retries would only make
+                    # it worse and would report the same thing.
+                    failures.append({
+                        "assignee": name,
+                        "error": "throttled; remaining assignee names not queried",
+                        "assignees_not_queried": assignees[position + 1:],
+                    })
+                    self._progress(
+                        "      throttled by Google Patents — "
+                        f"{len(assignees) - position - 1} name(s) not queried"
+                    )
+                    break
+                totals[name] = total
+                for fail in fails:
+                    failures.append({**fail, "assignee": name})
+                fresh = 0
+                for record in found:
+                    # The same patent can be filed under both the old and the new
+                    # name. Merge on the publication number and note every name it
+                    # was found under — that agreement is itself a signal.
+                    number = str((record.extra or {}).get("publication_number") or "")
+                    if number and number in seen:
+                        continue
+                    if number:
+                        seen.add(number)
+                    record.extra = {**(record.extra or {}), "found_under": name}
+                    records.append(record)
+                    fresh += 1
+                self._progress(f"      {name}: {fresh} new (endpoint reports {total})")
 
-        total = sum(v for v in totals.values() if isinstance(v, int)) or None
-        payload = {
-            "target_company": company,
-            "assignee": assignees[0],
-            "assignees_queried": assignees,
-            "totals_by_assignee": totals,
-            "patents_collected": len(records),
-            "total_reported_by_endpoint": total,
-            "failures": failures,
-            "sources": [r.to_dict() for r in records],
-            "generated_at": utc_now_iso(),
-            "endpoint": PATENTS_QUERY_URL,
-            "note": (
-                "CNIPA patents by assignee, via Google Patents, across every legal-entity "
-                "name stage 0 found — a rename splits the record set. Prompt 2 §10 priority 5. "
-                "Content is the published abstract as returned, not the full "
-                "specification. This endpoint rate-limits bursts with HTTP 503; a "
-                "throttled run reports a failure rather than an empty result."
-            ),
-        }
-        if self.config.output.get("save_json", True):
-            self.storage.save_json(PATENTS_JSON, payload)
-        if self.config.output.get("save_markdown", True):
-            self.storage.save(PATENTS_MD, _records_markdown(
-                f"Stage 7 — Patents: {label}", payload, records))
-        self._persist_records(records)
+            total = sum(v for v in totals.values() if isinstance(v, int)) or None
+            payload = {
+                "target_company": company,
+                "assignee": assignees[0],
+                "assignees_queried": assignees,
+                "totals_by_assignee": totals,
+                "patents_collected": len(records),
+                "total_reported_by_endpoint": total,
+                "failures": failures,
+                "sources": [r.to_dict() for r in records],
+                "generated_at": utc_now_iso(),
+                "endpoint": PATENTS_QUERY_URL,
+                "note": (
+                    "CNIPA patents by assignee, via Google Patents, across every legal-entity "
+                    "name stage 0 found — a rename splits the record set. Prompt 2 §10 priority 5. "
+                    "Content is the published abstract as returned, not the full "
+                    "specification. This endpoint rate-limits bursts with HTTP 503; a "
+                    "throttled run reports a failure rather than an empty result."
+                ),
+            }
+            if self.config.output.get("save_json", True):
+                self.storage.save_json(PATENTS_JSON, payload)
+            if self.config.output.get("save_markdown", True):
+                self.storage.save(PATENTS_MD, _records_markdown(
+                    f"Stage 7 — Patents: {label}", payload, records))
+            self._persist_records(records)
 
-        if failures and not records:
-            self.metadata.patents_status = "failed"
-            self.metadata.patents_error = failures[0].get("error")
-        else:
-            self.metadata.patents_status = "completed" if not failures else "completed_with_errors"
-        self.metadata.counts["patents"] = len(records)
-        self.storage.write_metadata(self.metadata)
-        if records:
-            self._progress(f"✓ Indexed {len(records)} of {total} patents")
-        else:
-            self._progress(f"  patents unavailable: {failures[0].get('error') if failures else 'none found'}")
-        return payload
+            if failures and not records:
+                self.metadata.patents_status = "failed"
+                self.metadata.patents_error = failures[0].get("error")
+            else:
+                self.metadata.patents_status = "completed" if not failures else "completed_with_errors"
+            self.metadata.counts["patents"] = len(records)
+            self.storage.write_metadata(self.metadata)
+            if records:
+                self._progress(f"✓ Indexed {len(records)} of {total} patents")
+            else:
+                self._progress(f"  patents unavailable: {failures[0].get('error') if failures else 'none found'}")
+            return payload
 
-    # -- repost resolution for sources whose original is gated --------------
+
     def run_repost_resolution(
         self,
         company: str,
@@ -675,84 +695,83 @@ class Pipeline:
             return {"skipped": "no gated URL_ONLY sources to resolve"}
 
         self._progress(f"[+] Resolving reposts for {len(blocked)} unreadable source(s)...")
-        self.metadata.repost_status = "running"
-        self.storage.write_metadata(self.metadata)
+        with self._channel("repost_status", "repost resolution"):
 
-        def search(title: str) -> list[dict[str, Any]]:
-            return searcher.search(title, count=10).get("pages", [])
+            def search(title: str) -> list[dict[str, Any]]:
+                return searcher.search(title, count=10).get("pages", [])
 
-        # Reposts on the company's own domain are preferred over media rewrites.
-        # The candidate hosts come from the sources already in hand rather than
-        # from a configured newsroom URL.
-        official_hosts = _official_host_candidates(
-            "\n".join(
-                (s.get("canonical_url") or s.get("retrieval_url") or "")
-                for s in sources
+            # Reposts on the company's own domain are preferred over media rewrites.
+            # The candidate hosts come from the sources already in hand rather than
+            # from a configured newsroom URL.
+            official_hosts = _official_host_candidates(
+                "\n".join(
+                    (s.get("canonical_url") or s.get("retrieval_url") or "")
+                    for s in sources
+                )
             )
-        )
-        resolver = RepostResolver(
-            self._get_fetcher(), search, official_hosts=official_hosts
-        )
-        records, gaps = resolver.resolve(
-            blocked, company, max_sources=int(cfg.get("max_sources", 10))
-        )
-
-        # The same guard the filings and local-domain channels use: a page that
-        # never names the company is not a repost of an article about it.
-        # Measured over 50 gated sources, 7 of 20 "recoveries" were pages like
-        # 微信公众平台 (a login screen), 重庆东站停车收费标准 and a ferroelectric
-        # transistor announcement — long enough and title-similar enough to
-        # clear the story check, but about something else entirely.
-        names = [company] + [
-            n for n in ((names_meta or {}).get("search_names") or []) if n
-        ]
-        kept: list[SourceRecord] = []
-        for record in records:
-            if _mentions_any(record, names):
-                kept.append(record)
-                continue
-            gaps.append({
-                "source_id": (record.extra or {}).get("reposts_source_id"),
-                "title": record.title,
-                "url": record.retrieval_url,
-                "reason": "candidate page never names the company",
-            })
-        if len(kept) != len(records):
-            self.log.info(
-                "dropped %d off-topic repost(s)", len(records) - len(kept)
+            resolver = RepostResolver(
+                self._get_fetcher(), search, official_hosts=official_hosts
             )
-        records = kept
+            records, gaps = resolver.resolve(
+                blocked, company, max_sources=int(cfg.get("max_sources", 10))
+            )
 
-        payload = {
-            "target_company": company,
-            "gated_sources": len(blocked),
-            "reposts_found": len(records),
-            "unresolved": gaps,
-            "sources": [r.to_dict() for r in records],
-            "generated_at": utc_now_iso(),
-            "note": (
-                "Each record here is the full text OF A REPOST, not of the original. The "
-                "originals are gated (WeChat serves a verification page to automated "
-                "requests, which was not circumvented) and their records remain URL_ONLY. "
-                "Wording may differ from the original; treat these as prompt 2 §10 "
-                "priority-10 sources and prefer the original where it matters."
-            ),
-        }
-        if self.config.output.get("save_json", True):
-            self.storage.save_json(REPOST_JSON, payload)
-        if self.config.output.get("save_markdown", True):
-            self.storage.save(REPOST_MD, _records_markdown(
-                f"Stage 5 — Repost Resolution: {company}", payload, records))
-        self._persist_records(records)
+            # The same guard the filings and local-domain channels use: a page that
+            # never names the company is not a repost of an article about it.
+            # Measured over 50 gated sources, 7 of 20 "recoveries" were pages like
+            # 微信公众平台 (a login screen), 重庆东站停车收费标准 and a ferroelectric
+            # transistor announcement — long enough and title-similar enough to
+            # clear the story check, but about something else entirely.
+            names = [company] + [
+                n for n in ((names_meta or {}).get("search_names") or []) if n
+            ]
+            kept: list[SourceRecord] = []
+            for record in records:
+                if _mentions_any(record, names):
+                    kept.append(record)
+                    continue
+                gaps.append({
+                    "source_id": (record.extra or {}).get("reposts_source_id"),
+                    "title": record.title,
+                    "url": record.retrieval_url,
+                    "reason": "candidate page never names the company",
+                })
+            if len(kept) != len(records):
+                self.log.info(
+                    "dropped %d off-topic repost(s)", len(records) - len(kept)
+                )
+            records = kept
 
-        self.metadata.repost_status = "completed"
-        self.metadata.counts["reposts_found"] = len(records)
-        self.metadata.counts["reposts_unresolved"] = len(gaps)
-        self.storage.write_metadata(self.metadata)
-        self._progress(f"✓ Recovered {len(records)} of {len(blocked)} via readable reposts")
-        return payload
+            payload = {
+                "target_company": company,
+                "gated_sources": len(blocked),
+                "reposts_found": len(records),
+                "unresolved": gaps,
+                "sources": [r.to_dict() for r in records],
+                "generated_at": utc_now_iso(),
+                "note": (
+                    "Each record here is the full text OF A REPOST, not of the original. The "
+                    "originals are gated (WeChat serves a verification page to automated "
+                    "requests, which was not circumvented) and their records remain URL_ONLY. "
+                    "Wording may differ from the original; treat these as prompt 2 §10 "
+                    "priority-10 sources and prefer the original where it matters."
+                ),
+            }
+            if self.config.output.get("save_json", True):
+                self.storage.save_json(REPOST_JSON, payload)
+            if self.config.output.get("save_markdown", True):
+                self.storage.save(REPOST_MD, _records_markdown(
+                    f"Stage 5 — Repost Resolution: {company}", payload, records))
+            self._persist_records(records)
 
-    # -- prompt loading ---------------------------------------------------
+            self.metadata.repost_status = "completed"
+            self.metadata.counts["reposts_found"] = len(records)
+            self.metadata.counts["reposts_unresolved"] = len(gaps)
+            self.storage.write_metadata(self.metadata)
+            self._progress(f"✓ Recovered {len(records)} of {len(blocked)} via readable reposts")
+            return payload
+
+
     def _load_prompt(self, stage: int) -> str:
         path = self.config.prompt_path(stage)
         if not path.is_file():
@@ -976,6 +995,7 @@ class Pipeline:
                 (listed["name"], f"stage 1 mentions {listed['code']} next to it")
             )
 
+        self._probe_errors = []
         probe = bool(cfg.get("probe_filings", True))
         for name, why in candidates:
             if probe:
@@ -990,6 +1010,13 @@ class Pipeline:
             derived["filings_search_key"] = name
             derived["evidence"]["filings_search_key"] = why
             break
+
+        if not derived["filings_search_key"] and self._probe_errors:
+            derived["evidence"]["filings_search_key"] = (
+                f"no key: the registry did not answer "
+                f"({len(self._probe_errors)} probe error(s))"
+            )
+            derived["filings_probe_errors"] = self._probe_errors
 
         return derived
 
@@ -1006,7 +1033,11 @@ class Pipeline:
                 self.metadata.target_company, search_key, max_records=1
             )
         except Exception as exc:
-            self.log.debug("filings probe failed for %r: %s", search_key, exc)
+            # An unreachable registry is not a company with nothing on file,
+            # and reporting them alike said "no search key derived" when the
+            # truth was that cninfo did not answer.
+            self.log.warning("filings probe errored for %r: %s", search_key, exc)
+            self._probe_errors.append({"search_key": search_key, "error": str(exc)})
             return False
         if records:
             self.log.info("filings found under %r", search_key)
@@ -1496,138 +1527,137 @@ class Pipeline:
 
         sites = cfg.get("site_filters") or [None]
         industries = cfg.get("industries") or [None]
-        self.metadata.search_sweep_status = "running"
-        self.storage.write_metadata(self.metadata)
+        with self._channel("search_sweep_status", "search sweep"):
 
-        raw_responses: list[dict[str, Any]] = []
-        records: list[SourceRecord] = []
-        failures: list[dict[str, str]] = []
-        seen_urls: set[str] = set()
-        # Search engines suggest related queries; those are free new anchors.
-        discovered_anchors: list[str] = []
+            raw_responses: list[dict[str, Any]] = []
+            records: list[SourceRecord] = []
+            failures: list[dict[str, str]] = []
+            seen_urls: set[str] = set()
+            # Search engines suggest related queries; those are free new anchors.
+            discovered_anchors: list[str] = []
 
-        # Each query runs once per site filter and industry, so the number of
-        # API calls is a multiple of the query count. Saying "6 queries" and
-        # then counting to 12 read like a contradiction, and it is the call
-        # count that spends the monthly quota.
-        total = len(selected) * len(sites) * len(industries)
-        done = 0
-        if total != len(selected):
-            self._progress(
-                f"      {len(selected)} queries x {len(sites)} site filter(s)"
-                + (f" x {len(industries)} industry filter(s)"
-                   if len(industries) > 1 else "")
-                + f" = {total} searches"
-            )
-        for query in selected:
-            for site in sites:
-                for industry in industries:
-                    done += 1
-                    self._progress(
-                        f"      search {done}/{total}: {query}"
-                        + (f" [site:{site}]" if site else "")
-                        + (f" [industry:{industry}]" if industry else "")
-                    )
-                    try:
-                        result = searcher.search(
-                            query,
-                            count=int(cfg.get("results_per_query", 20)),
-                            site=site,
-                            industry=industry,
-                            freshness=cfg.get("freshness"),
-                            mode=int(cfg.get("mode", 2)),
+            # Each query runs once per site filter and industry, so the number of
+            # API calls is a multiple of the query count. Saying "6 queries" and
+            # then counting to 12 read like a contradiction, and it is the call
+            # count that spends the monthly quota.
+            total = len(selected) * len(sites) * len(industries)
+            done = 0
+            if total != len(selected):
+                self._progress(
+                    f"      {len(selected)} queries x {len(sites)} site filter(s)"
+                    + (f" x {len(industries)} industry filter(s)"
+                       if len(industries) > 1 else "")
+                    + f" = {total} searches"
+                )
+            for query in selected:
+                for site in sites:
+                    for industry in industries:
+                        done += 1
+                        self._progress(
+                            f"      search {done}/{total}: {query}"
+                            + (f" [site:{site}]" if site else "")
+                            + (f" [industry:{industry}]" if industry else "")
                         )
-                    except ProviderError as exc:
-                        # One bad query must not lose the whole sweep.
-                        self.log.warning("search failed for %r: %s", query, exc)
-                        failures.append({"query": query, "site": site or "", "error": str(exc)})
-                        continue
-
-                    for anchor in (result.get("related_searches") or []) + (
-                        result.get("people_also_search_for") or []
-                    ):
-                        if anchor and anchor not in discovered_anchors:
-                            discovered_anchors.append(anchor)
-                    if result.get("raw"):
-                        raw_responses.append(
-                            {"query": query, "site": site, "industry": industry,
-                             "response": result["raw"]}
-                        )
-                    for page in result.get("pages", []):
-                        url = (page.get("url") or "").strip()
-                        key = url or f"{query}|{page.get('title')}"
-                        if key in seen_urls:
+                        try:
+                            result = searcher.search(
+                                query,
+                                count=int(cfg.get("results_per_query", 20)),
+                                site=site,
+                                industry=industry,
+                                freshness=cfg.get("freshness"),
+                                mode=int(cfg.get("mode", 2)),
+                            )
+                        except ProviderError as exc:
+                            # One bad query must not lose the whole sweep.
+                            self.log.warning("search failed for %r: %s", query, exc)
+                            failures.append({"query": query, "site": site or "", "error": str(exc)})
                             continue
-                        seen_urls.add(key)
-                        records.append(
-                            _record_from_page(page, company, query=query, site=site)
-                        )
 
-        for offset, record in enumerate(records, start=1):
-            record.source_id = f"SEARCH_{offset:03d}"
+                        for anchor in (result.get("related_searches") or []) + (
+                            result.get("people_also_search_for") or []
+                        ):
+                            if anchor and anchor not in discovered_anchors:
+                                discovered_anchors.append(anchor)
+                        if result.get("raw"):
+                            raw_responses.append(
+                                {"query": query, "site": site, "industry": industry,
+                                 "response": result["raw"]}
+                            )
+                        for page in result.get("pages", []):
+                            url = (page.get("url") or "").strip()
+                            key = url or f"{query}|{page.get('title')}"
+                            if key in seen_urls:
+                                continue
+                            seen_urls.add(key)
+                            records.append(
+                                _record_from_page(page, company, query=query, site=site)
+                            )
 
-        # Read the pages, don't just list them. The sweep used to keep every
-        # result as the search summary it arrived as: measured on AgiBot, 167
-        # records holding 19,277 chars between them, about 115 each. The URLs
-        # are already paid for, and 53 of the 114 domains Baidu returns serve
-        # their text to a normal request.
-        read = self._read_bodies(records, int(cfg.get("max_pages_fetched", 60)))
-        if read:
-            self._progress(
-                f"      read {read} of {len(records)} result pages in full"
-            )
+            for offset, record in enumerate(records, start=1):
+                record.source_id = f"SEARCH_{offset:03d}"
 
-        payload = {
-            "target_company": company,
-            "queries_available": len(queries),
-            "queries_searched": len(selected),
-            "queries_not_searched": queries[len(selected):],
-            "site_filters": sites,
-            "industries": industries,
-            "results": [r.to_dict() for r in records],
-            "failures": failures,
-            "queries_dropped": dropped,
-            "pages_read_in_full": read,
-            "engine_suggested_anchors": discovered_anchors,
-            "generated_at": utc_now_iso(),
-            "provider": searcher.name,
-            "endpoint": searcher.describe().get("endpoints", {}).get("search"),
-            "content_note": (
-                "Search returns a title and a summary. Where the page serves its "
-                "text to a normal request it is fetched and the record becomes "
-                "VERBATIM_FULL_TEXT; otherwise it stays SEARCH_SNIPPET_ONLY or "
-                "URL_ONLY. Gated hosts (WeChat, the 工商 registries) are never "
-                "fetched, and search-result and video pages are refused."
-            ),
-        }
+            # Read the pages, don't just list them. The sweep used to keep every
+            # result as the search summary it arrived as: measured on AgiBot, 167
+            # records holding 19,277 chars between them, about 115 each. The URLs
+            # are already paid for, and 53 of the 114 domains Baidu returns serve
+            # their text to a normal request.
+            read = self._read_bodies(records, int(cfg.get("max_pages_fetched", 60)))
+            if read:
+                self._progress(
+                    f"      read {read} of {len(records)} result pages in full"
+                )
 
-        if self.config.output.get("save_json", True):
-            self.storage.save_json(SWEEP_JSON, payload)
-        if self.config.output.get("save_raw_response", True) and raw_responses:
-            self.storage.save_json(RAW_SWEEP, raw_responses)
-        if self.config.output.get("save_markdown", True):
-            self.storage.save(SWEEP_MD, _sweep_markdown(company, payload))
-        # Through _persist_records like every other channel. Writing the files
-        # here with a private index left the sweep out of 00_INDEX.md — 38 of
-        # 221 sources in the shipped Unitree run — and out of the URL de-dupe
-        # and title clustering with them. Both CLAUDE.md and the HANDOFF tell
-        # the reader to pick from the index, so those records were invisible.
-        self._persist_records(records)
+            payload = {
+                "target_company": company,
+                "queries_available": len(queries),
+                "queries_searched": len(selected),
+                "queries_not_searched": queries[len(selected):],
+                "site_filters": sites,
+                "industries": industries,
+                "results": [r.to_dict() for r in records],
+                "failures": failures,
+                "queries_dropped": dropped,
+                "pages_read_in_full": read,
+                "engine_suggested_anchors": discovered_anchors,
+                "generated_at": utc_now_iso(),
+                "provider": searcher.name,
+                "endpoint": searcher.describe().get("endpoints", {}).get("search"),
+                "content_note": (
+                    "Search returns a title and a summary. Where the page serves its "
+                    "text to a normal request it is fetched and the record becomes "
+                    "VERBATIM_FULL_TEXT; otherwise it stays SEARCH_SNIPPET_ONLY or "
+                    "URL_ONLY. Gated hosts (WeChat, the 工商 registries) are never "
+                    "fetched, and search-result and video pages are refused."
+                ),
+            }
 
-        self.metadata.search_sweep_status = "completed" if not failures else "completed_with_errors"
-        self.metadata.counts["search_sweep_results"] = len(records)
-        self.metadata.counts["search_sweep_pages_read"] = read
-        self.metadata.counts["engine_suggested_anchors"] = len(discovered_anchors)
-        self.metadata.counts["search_sweep_failures"] = len(failures)
-        if failures:
-            self.metadata.search_sweep_error = f"{len(failures)} query/queries failed"
-        self.storage.write_metadata(self.metadata)
-        return payload
+            if self.config.output.get("save_json", True):
+                self.storage.save_json(SWEEP_JSON, payload)
+            if self.config.output.get("save_raw_response", True) and raw_responses:
+                self.storage.save_json(RAW_SWEEP, raw_responses)
+            if self.config.output.get("save_markdown", True):
+                self.storage.save(SWEEP_MD, _sweep_markdown(company, payload))
+            # Through _persist_records like every other channel. Writing the files
+            # here with a private index left the sweep out of 00_INDEX.md — 38 of
+            # 221 sources in the shipped Unitree run — and out of the URL de-dupe
+            # and title clustering with them. Both CLAUDE.md and the HANDOFF tell
+            # the reader to pick from the index, so those records were invisible.
+            self._persist_records(records)
+
+            self.metadata.search_sweep_status = "completed" if not failures else "completed_with_errors"
+            self.metadata.counts["search_sweep_results"] = len(records)
+            self.metadata.counts["search_sweep_pages_read"] = read
+            self.metadata.counts["engine_suggested_anchors"] = len(discovered_anchors)
+            self.metadata.counts["search_sweep_failures"] = len(failures)
+            if failures:
+                self.metadata.search_sweep_error = f"{len(failures)} query/queries failed"
+            self.storage.write_metadata(self.metadata)
+            return payload
 
 
-# ---------------------------------------------------------------------------
-# Parsers. All of these are additive: the untouched model text is always saved
-# alongside, so a parse miss can never lose evidence.
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # Parsers. All of these are additive: the untouched model text is always saved
+    # alongside, so a parse miss can never lose evidence.
+    # ---------------------------------------------------------------------------
 
 

@@ -25,7 +25,7 @@ from src import __version__
 from src.config import ConfigError, load_config
 from src.models import RunMetadata
 from src.pipeline import Pipeline, extract_recommended_queries
-from src.storage import LocalStorageBackend, STAGE1_JSON, STAGE1_MD, STAGE2_JSON
+from src.storage import LocalStorageBackend, StorageError, STAGE1_JSON, STAGE1_MD, STAGE2_JSON
 from src.provider import ProviderError, build_provider
 from src.utils import (
     add_file_handler,
@@ -247,7 +247,11 @@ def main(argv: list[str] | None = None) -> int:
         except FileNotFoundError as exc:
             report_error(exc)
             return 2
-        existing = storage.load_metadata() or {}
+        try:
+            existing = storage.load_metadata() or {}
+        except StorageError as exc:
+            report_error(exc)
+            return 2
         company = company or existing.get("target_company")
         if not company:
             report_error(
@@ -330,7 +334,13 @@ def main(argv: list[str] | None = None) -> int:
         prior_stage2_status = None
     else:
         run_dir = resume_dir
-        existing = storage.load_metadata() or {}
+        try:
+            existing = storage.load_metadata() or {}
+        except StorageError as exc:
+            # Refusing to resume is the safe answer: without the run's state we
+            # cannot tell whether a finished stage 2 is about to be overwritten.
+            report_error(exc)
+            return 2
         metadata = RunMetadata(
             target_company=company,
             company_slug=existing.get("company_slug") or slugify(company),
@@ -525,6 +535,13 @@ def main(argv: list[str] | None = None) -> int:
             say()
             runner(company, arg)
         except Exception as exc:
+            # The channel sets its own status to "running" before working, so
+            # an exception here left it at "running" forever — a finished run
+            # whose metadata says a channel is still going.
+            if getattr(metadata, status_field, "") == "running":
+                setattr(metadata, status_field, "failed")
+                metadata.notes.append(f"{label} failed: {exc}")
+                storage.write_metadata(metadata)
             log.warning("%s stage failed: %s", label, exc)
             say(f"  {label} failed ({exc}) — earlier results unaffected")
 
@@ -537,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
             pipeline.run_local_sources(company, names_meta)
         except Exception as exc:
             metadata.local_sources_status = "failed"
+            metadata.notes.append(f"local domain search failed: {exc}")
             storage.write_metadata(metadata)
             log.warning("local domain search failed: %s", exc)
             say(f"  local domain search failed ({exc}) — earlier results unaffected")
