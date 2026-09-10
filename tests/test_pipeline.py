@@ -1105,6 +1105,81 @@ class TestAMalformedConfigIsNotIgnored(unittest.TestCase):
         self.assertEqual(config.search_sweep["max_pages_fetched"], 60)
 
 
+class TestOffSubjectResultsAreMarkedNotDropped(unittest.TestCase):
+    """Measured both ways before choosing to mark rather than filter.
+
+    LimX: 21 of 162 sweep results never named the company, and every one was
+    noise — a 合肥 industrial-park piece, an alumni meeting, an elevator
+    association's AGM, a WeChat login page. Unitree: exactly 1 of 68, and it
+    was a genuine industry analysis (灵巧手电机走到关键阶段, on the actuator
+    roadmap). A filter would have taken the good one with the rest.
+    """
+
+    def test_the_index_marks_them_and_sorts_them_last(self):
+        from src.models import SourceRecord
+        from src.reports import index_markdown
+
+        on = SourceRecord(
+            source_id="A", title="宇树科技发布H2", retrieval_url="http://a/1",
+            content="본문" * 200, content_access_status="SEARCH_SNIPPET_ONLY",
+        )
+        off = SourceRecord(
+            source_id="B", title="合肥的创与新", retrieval_url="http://b/1",
+            content="요약", content_access_status="SEARCH_SNIPPET_ONLY",
+            extra={"names_company": False},
+        )
+        rows = [l for l in index_markdown("Unitree", [off, on]).splitlines()
+                if l.startswith("| ") and "file |" not in l and "---" not in l]
+        self.assertEqual(len(rows), 2)
+        self.assertIn("| A |", rows[0], "on-subject sources come first")
+        self.assertTrue(rows[1].rstrip().endswith("| off |"))
+        self.assertFalse(rows[0].rstrip().endswith("| off |"))
+
+    def test_the_marker_is_explained_in_the_index(self):
+        from src.reports import index_markdown
+
+        self.assertIn("never name the", index_markdown("X", []))
+
+    def test_the_sweep_flags_without_discarding(self):
+        h = Harness(MockProvider())
+        try:
+            h.config.search_sweep = {
+                **h.config.search_sweep, "enabled": True, "provider": None,
+                "site_filters": [None], "industries": [],
+                "max_pages_fetched": 0,
+            }
+
+            class Searcher:
+                name = "stub"
+                supports_search = True
+
+                @staticmethod
+                def describe():
+                    return {"endpoints": {"search": "stub://search"}}
+
+                @staticmethod
+                def search(query, count=20, **_kw):
+                    return {"pages": [
+                        {"title": "宇树科技发布H2", "url": "http://a",
+                         "content": "宇树科技는 …"},
+                        {"title": "合肥的创与新", "url": "http://b",
+                         "content": "산업단지 소식"},
+                    ]}
+
+            h.pipeline._sweep_provider = lambda: Searcher()
+            payload = h.pipeline.run_search_sweep(
+                "Unitree", ["宇树科技 발표"], {"search_names": ["宇树科技", "宇树"]}
+            )
+            # Both kept.
+            self.assertEqual(len(payload["results"]), 2)
+            self.assertEqual(payload["results_not_naming_the_company"], 1)
+            flags = [(r.get("extra") or {}).get("names_company")
+                     for r in payload["results"]]
+            self.assertEqual(sorted(str(f) for f in flags), ["False", "None"])
+        finally:
+            h.cleanup()
+
+
 class TestSweepReadsResultPages(unittest.TestCase):
     """A search result left as it arrives is a pointer, not evidence.
 
@@ -3818,7 +3893,8 @@ class TestNameResolution(unittest.TestCase):
         out = index_markdown("X", recs)
         data_rows = [l for l in out.splitlines()
                      if l.startswith("| source_") or l.startswith("| S")]
-        marked = [l for l in data_rows if l.rstrip().endswith("| dup |")]
+        # dup is no longer the last column; `off` follows it.
+        marked = [l for l in data_rows if "| dup |" in l]
         self.assertEqual(len(marked), 2, "one primary, two duplicates")
 
     def test_provider_payload_is_not_copied_into_each_source(self):

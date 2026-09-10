@@ -980,9 +980,16 @@ class Pipeline:
             name = str(entry.get("name") or "").strip()
             if name and _is_legal_entity(name) and name not in assignees:
                 assignees.append(name)
+        # search_names are search *queries*, so some are a name plus context —
+        # "逐际动力 张巍", "LimX Dynamics 人形机器人". Those can never be an
+        # assignee, and querying them wastes requests on an endpoint that
+        # throttles: a LimX run spent its first call and was cut off, so the
+        # channel returned nothing. An assignee name is one token.
         for name in (names_meta.get("search_names") or []):
             name = str(name or "").strip()
             if (name and name not in assignees
+                    and " " not in name
+                    and len(name) <= 12
                     and any("\u4e00" <= c <= "\u9fff" for c in name)
                     and "合伙" not in name):
                 assignees.append(name)
@@ -1511,7 +1518,12 @@ class Pipeline:
         return len(self._saved) - before
 
     # -- WSA search sweep (second evidence channel) -----------------------
-    def run_search_sweep(self, company: str, queries: list[str]) -> dict[str, Any]:
+    def run_search_sweep(
+        self,
+        company: str,
+        queries: list[str],
+        names_meta: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
         cfg = self.config.search_sweep
         if not cfg.get("enabled", True):
             self.metadata.search_sweep_status = "disabled"
@@ -1622,7 +1634,24 @@ class Pipeline:
             # records holding 19,277 chars between them, about 115 each. The URLs
             # are already paid for, and 53 of the 114 domains Baidu returns serve
             # their text to a normal request.
-            read = self._read_bodies(records, int(cfg.get("max_pages_fetched", 60)))
+            # Flag results that never name the company. Not dropped: measured
+            # across two runs, LimX had 21 of 162 and every one was noise (a
+            # 合肥 industrial-park piece, an alumni meeting, an elevator
+            # association's AGM), while Unitree had exactly 1 of 68 and it was
+            # a genuine industry analysis — 灵巧手电机走到关键阶段, on the
+            # actuator roadmap. A filter would take the good one with the rest,
+            # so the reader gets a marker and decides.
+            names = [company] + [
+                n for n in ((names_meta or {}).get("search_names") or []) if n
+            ]
+            for record in records:
+                if not _mentions_any(record, names):
+                    record.extra = {**(record.extra or {}),
+                                    "names_company": False}
+
+            read = self._read_bodies(
+                records, int(cfg.get("max_pages_fetched", 60))
+            )
             if read:
                 self._progress(
                     f"      read {read} of {len(records)} result pages in full"
@@ -1639,6 +1668,9 @@ class Pipeline:
                 "failures": failures,
                 "queries_dropped": dropped,
                 "pages_read_in_full": read,
+            "results_not_naming_the_company": sum(
+                1 for r in records if (r.extra or {}).get("names_company") is False
+            ),
                 "engine_suggested_anchors": discovered_anchors,
                 "generated_at": utc_now_iso(),
                 "provider": searcher.name,

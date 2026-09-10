@@ -150,6 +150,7 @@ def index_markdown(company: str, records: list[SourceRecord]) -> str:
         records,
         key=lambda r: (
             _grade_rank(r.content_access_status),
+            r.extra.get("names_company") is False,
             r.extra.get("cluster_role") == "duplicate_coverage",
             -(len(r.content or "")),
         ),
@@ -166,8 +167,11 @@ def index_markdown(company: str, records: list[SourceRecord]) -> str:
         "`dup` marks repeated coverage of a story already listed above — skip unless",
         "you need a second account of it.",
         "",
-        "| file | grade | date | source | title | chars | dup |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "`off` marks a search result whose title and snippet never name the",
+        "company — usually unrelated, occasionally a genuine industry piece.",
+        "",
+        "| file | grade | date | source | title | chars | dup | off |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
 
     from urllib.parse import urlparse
@@ -181,6 +185,10 @@ def index_markdown(company: str, records: list[SourceRecord]) -> str:
         title = (record.title or "").replace("|", "／")[:52]
         chars = len(record.content or "")
         dup = "dup" if record.extra.get("cluster_role") == "duplicate_coverage" else ""
-        lines.append(f"| {path} | {grade} | {date} | {host} | {title} | {chars} | {dup} |")
+        off = "off" if record.extra.get("names_company") is False else ""
+        lines.append(
+            f"| {path} | {grade} | {date} | {host} | {title} | {chars} | "
+            f"{dup} | {off} |"
+        )
 
     return "\n".join(lines) + "\n"

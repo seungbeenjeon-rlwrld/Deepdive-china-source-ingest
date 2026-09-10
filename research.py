@@ -581,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
                 say()
                 planned = min(len(queries), int(config.search_sweep.get("max_queries", 12)))
                 say(f"[+] Sweeping structured search over {planned} recommended queries...")
-                sweep = pipeline.run_search_sweep(company, queries)
+                sweep = pipeline.run_search_sweep(company, queries, names_meta)
                 if "skipped" in sweep:
                     say(f"  skipped: {sweep['skipped']}")
                 else:
