@@ -458,6 +458,7 @@ class Pipeline:
         """
         if limit <= 0:
             return 0
+        cap = int(self.config.output.get("max_body_chars", 40_000))
         fetcher = self._get_fetcher()
         fetched = 0
         for record in records:
@@ -474,11 +475,32 @@ class Pipeline:
             if page.blocked or not page.text or len(page.text) < 200:
                 record.extra = {**record.extra, "fetch_error": "no usable body"}
                 continue
-            record.content = page.text
+            text = page.text
             record.canonical_url = page.final_url
-            record.content_access_status = "VERBATIM_FULL_TEXT"
             record.reaccess_status = "VERIFIED_REOPENABLE"
-            record.derived = {**(record.derived or {}), "content_chars": len(page.text)}
+            if len(text) > cap:
+                # One record can otherwise swallow the corpus. Measured on a
+                # UBTech run: 金杜律师事务所's IPO legal opinion came back at
+                # 2,773,993 chars from file.finance.qq.com — 95% of everything
+                # collected, against a median result of 160 — and no reader can
+                # open that file at all. Cap it at the same 40,000 the filing
+                # extractor uses per section, say so, and keep the URL so the
+                # rest is one click away.
+                record.content = text[:cap]
+                record.content_access_status = "VERBATIM_PARTIAL_TEXT"
+                record.extra = {
+                    **(record.extra or {}),
+                    "body_truncated_from_chars": len(text),
+                    "note": (
+                        f"Body truncated to {cap:,} of {len(text):,} chars. "
+                        "Open the URL for the remainder."
+                    ),
+                }
+            else:
+                record.content = text
+                record.content_access_status = "VERBATIM_FULL_TEXT"
+            record.derived = {**(record.derived or {}),
+                              "content_chars": len(record.content or "")}
             fetched += 1
         return fetched
 

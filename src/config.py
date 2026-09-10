@@ -30,6 +30,11 @@ class ConfigError(RuntimeError):
 DEFAULTS: dict[str, Any] = {
     "provider": "claude-cli",
     "output": {
+        # Longest body kept per source. One UBTech result was an IPO legal
+        # opinion at 2,773,993 chars — 95% of that whole corpus, against a
+        # median of 160 — and unopenable. Same value the filing extractor uses
+        # per section, so no single file is bigger than a reader can handle.
+        "max_body_chars": 40000,
         "root_dir": "./research",
         "save_markdown": True,
         "save_json": True,

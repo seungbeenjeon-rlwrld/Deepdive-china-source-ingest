@@ -2,6 +2,11 @@
 provider: claude-cli
 
 output:
+  # 소스 1건당 보존할 본문 최대 길이. UBTech 실행에서 IPO 법률의견서 한 건이
+  # 2,773,993자로 들어왔고(중앙값 160자), 그 코퍼스 전체의 95%였으며 어떤
+  # 컨텍스트 창으로도 열 수 없었음. 공시 추출의 장(節) 상한과 같은 값을 써서
+  # 한 파일이 읽을 수 없을 만큼 커지지 않게 함. 잘린 경우 표시하고 URL 은 유지함.
+  max_body_chars: 40000
   root_dir: ./research
   save_markdown: true
   save_json: true

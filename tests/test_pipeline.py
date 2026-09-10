@@ -1222,6 +1222,49 @@ class TestSweepReadsResultPages(unittest.TestCase):
         self.assertEqual(record.content_access_status, "VERBATIM_FULL_TEXT")
         self.assertEqual(record.content, body)
 
+    def test_a_huge_body_is_capped_and_says_so(self):
+        """One record can otherwise swallow the corpus.
+
+        A UBTech run fetched 金杜律师事务所's IPO legal opinion from
+        file.finance.qq.com at 2,773,993 chars — 95% of everything collected,
+        against a median result of 160 — and no reader can open that file.
+        """
+        h = self._harness()
+        body = "法律意见书正文。" * 20_000  # ~160k chars
+
+        class Page:
+            final_url = "http://file.example.cn/a"
+            text = body
+            blocked = False
+
+        h.pipeline._get_fetcher = lambda: type(
+            "F", (), {"fetch": staticmethod(lambda url: Page())}
+        )()
+        record = self._record("http://file.example.cn/a")
+        self.assertEqual(h.pipeline._read_bodies([record], 5), 1)
+
+        self.assertEqual(len(record.content), 40_000)
+        # The grade must drop: we no longer hold the whole document.
+        self.assertEqual(record.content_access_status, "VERBATIM_PARTIAL_TEXT")
+        self.assertEqual(record.extra["body_truncated_from_chars"], len(body))
+        self.assertIn("Open the URL", record.extra["note"])
+
+    def test_a_body_inside_the_cap_is_full_text(self):
+        h = self._harness()
+
+        class Page:
+            final_url = "http://x/a"
+            text = "본문" * 500
+
+        Page.blocked = False
+        h.pipeline._get_fetcher = lambda: type(
+            "F", (), {"fetch": staticmethod(lambda url: Page())}
+        )()
+        record = self._record("http://x/a")
+        h.pipeline._read_bodies([record], 5)
+        self.assertEqual(record.content_access_status, "VERBATIM_FULL_TEXT")
+        self.assertNotIn("body_truncated_from_chars", record.extra)
+
     def test_gated_serp_and_video_urls_are_never_fetched(self):
         h = self._harness()
         tried = []
