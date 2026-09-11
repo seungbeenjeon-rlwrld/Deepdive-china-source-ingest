@@ -426,7 +426,7 @@ class ExchangeFilingCollector:
                     _time.sleep(3.0 * (2 ** (attempt - 1)))
                     self.log.info("retrying cninfo page %d (attempt %d)", page, attempt + 1)
                 try:
-                    self.fetcher._throttle()
+                    self.fetcher._throttle(CNINFO_QUERY_URL)
                     response = requests.post(
                         CNINFO_QUERY_URL,
                         headers={
@@ -726,7 +726,7 @@ class PatentCollector:
             # empty result.
             for attempt in range(PATENTS_ATTEMPTS):
                 try:
-                    self.fetcher._throttle()
+                    self.fetcher._throttle(url)
                     if attempt and PATENTS_BACKOFF_BASE:
                         import time as _time
 
@@ -859,7 +859,7 @@ class PatentCollector:
             if not url:
                 continue
             try:
-                self.fetcher._throttle()
+                self.fetcher._throttle(url)
                 response = requests.get(
                     url,
                     headers={

@@ -95,7 +95,11 @@ class Fetcher:
     def __init__(self, policy: Optional[FetchPolicy] = None) -> None:
         self.policy = policy or FetchPolicy()
         self.log = get_logger()
-        self._last_request_at = 0.0
+        # Per-host, not global: politeness is owed to each server, not across
+        # unrelated ones. The old single clock made a fetch from host B wait
+        # 1.5s after host A even though they share nothing, and a run touches
+        # ~100 URLs across dozens of hosts.
+        self._last_request_at: dict[str, float] = {}
         self._robots: dict[str, Optional[urllib.robotparser.RobotFileParser]] = {}
         try:
             import requests
@@ -110,11 +114,13 @@ class Fetcher:
             raise FetchError(f"requests is not installed: {exc}") from exc
 
     # -- politeness -------------------------------------------------------
-    def _throttle(self) -> None:
-        elapsed = time.monotonic() - self._last_request_at
+    def _throttle(self, url: str = "") -> None:
+        host = urlparse(url).netloc or "_global"
+        last = self._last_request_at.get(host, 0.0)
+        elapsed = time.monotonic() - last
         if elapsed < self.policy.delay_seconds:
             time.sleep(self.policy.delay_seconds - elapsed)
-        self._last_request_at = time.monotonic()
+        self._last_request_at[host] = time.monotonic()
 
     def _allowed(self, url: str) -> bool:
         if not self.policy.respect_robots:
@@ -123,12 +129,21 @@ class Fetcher:
         origin = f"{parsed.scheme}://{parsed.netloc}"
         if origin not in self._robots:
             parser = urllib.robotparser.RobotFileParser()
-            parser.set_url(f"{origin}/robots.txt")
             try:
-                parser.read()
-                self._robots[origin] = parser
+                # RobotFileParser.read() calls urlopen with no timeout, so one
+                # slow robots host could hang the whole run. Fetch it ourselves
+                # with a timeout and hand the text to the parser.
+                resp = self._session.get(
+                    f"{origin}/robots.txt",
+                    timeout=min(10, self.policy.timeout_seconds),
+                )
+                if resp.status_code >= 400:
+                    self._robots[origin] = None
+                else:
+                    parser.parse(resp.text.splitlines())
+                    self._robots[origin] = parser
             except Exception:
-                # No robots.txt (or unreadable) means nothing is disallowed.
+                # Unreachable or unreadable robots.txt means nothing disallowed.
                 self._robots[origin] = None
         parser = self._robots[origin]
         if parser is None:
@@ -143,7 +158,7 @@ class Fetcher:
         if not self._allowed(url):
             raise FetchBlocked(f"robots.txt disallows fetching {url}")
 
-        self._throttle()
+        self._throttle(url)
         self.log.debug("fetching %s", url)
         try:
             response = self._session.get(

@@ -482,6 +482,37 @@ class TestWeChatUrlForms(unittest.TestCase):
         self.assertTrue(d["is_ephemeral"])
 
 
+class TestPerHostThrottle(unittest.TestCase):
+    """Politeness is owed to each server, not across unrelated ones.
+
+    The old global clock made a fetch from host B wait the full delay after
+    host A even though they share nothing, and a run touches ~100 URLs across
+    dozens of hosts.
+    """
+
+    def test_different_hosts_do_not_wait_for_each_other(self):
+        import time as _t
+
+        from src.fetcher import Fetcher, FetchPolicy
+
+        f = Fetcher(FetchPolicy(delay_seconds=1.5))
+        start = _t.monotonic()
+        for host in ("http://a.com/1", "http://b.com/1", "http://c.com/1"):
+            f._throttle(host)
+        self.assertLess(_t.monotonic() - start, 0.3)
+
+    def test_the_same_host_still_waits(self):
+        import time as _t
+
+        from src.fetcher import Fetcher, FetchPolicy
+
+        f = Fetcher(FetchPolicy(delay_seconds=0.2))
+        start = _t.monotonic()
+        for _ in range(3):
+            f._throttle("http://same.com/x")
+        self.assertGreaterEqual(_t.monotonic() - start, 0.35)
+
+
 class TestFetcherBlockDetection(unittest.TestCase):
     """A verification interstitial must be reported, never treated as content."""
 
@@ -1475,7 +1506,7 @@ class TestPatentClaimsReplaceTheAbstract(unittest.TestCase):
                 timeout_seconds = 5
 
             @staticmethod
-            def _throttle():
+            def _throttle(url=""):
                 return None
 
         return PatentCollector(StubFetcher())
@@ -2373,7 +2404,7 @@ class TestRegistryCollectors(unittest.TestCase):
         class FakeFetcher:
             policy = FetchPolicy(delay_seconds=0)
 
-            def _throttle(self):
+            def _throttle(self, url=""):
                 pass
 
         return FakeFetcher()
