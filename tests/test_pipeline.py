@@ -1797,6 +1797,49 @@ class TestLocalDomainResultsMustNameTheCompany(unittest.TestCase):
             h.cleanup()
 
 
+class TestPlaceholderUrlsNeverMerge(unittest.TestCase):
+    """A URL field that names no page must not key a merge.
+
+    A stage 2 model writes 同上 ("as above") when a row repeats the previous
+    row's link. Measured on a UBTech run: 37 unrelated sources carried the
+    literal string 同上 in the URL field. Keying a merge on it would collapse
+    them into a single record.
+    """
+
+    def test_placeholder_and_malformed_urls_are_rejected(self):
+        from src.pipeline import _is_mergeable_url
+
+        for bad in ("同上", "见上", "同前", "", "  ", "-", "n/a", "无",
+                    "http://", "https://", "#frag", "ftp://x.com"):
+            self.assertFalse(_is_mergeable_url(bad), bad)
+
+    def test_real_urls_are_accepted(self):
+        from src.pipeline import _is_mergeable_url
+
+        for good in ("http://x.cn/a", "https://a.com/b?x=1",
+                     "https://mp.weixin.qq.com/s/abc"):
+            self.assertTrue(_is_mergeable_url(good), good)
+
+    def test_two_sources_sharing_a_placeholder_stay_separate(self):
+        from src.models import SourceRecord
+
+        h = Harness(MockProvider())
+        try:
+            def rec(sid):
+                return SourceRecord(
+                    source_id=sid, title=f"기사 {sid}", retrieval_url="同上",
+                    content="내용" * 40,
+                    content_access_status="SEARCH_SNIPPET_ONLY",
+                    origin="stage2_model_output",
+                )
+
+            h.pipeline._persist_records([rec("A"), rec("B"), rec("C")])
+            on_disk = sorted((h.run_dir / "raw_sources").glob("*.json"))
+            self.assertEqual(len(on_disk), 3, "placeholder URLs must not merge")
+        finally:
+            h.cleanup()
+
+
 class TestEverySavedSourceIsIndexed(unittest.TestCase):
     """A source missing from 00_INDEX.md is invisible downstream.
 

@@ -24,13 +24,14 @@ provenance. Nothing is presented as the original when it is not.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from typing import Callable, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from .fetcher import FetchBlocked, FetchError, Fetcher
 from .models import SourceRecord, classify_url, guess_platform
 from .utils import get_logger
+
+SearchFn = Callable[[str], list[dict]]
 
 # Hosts we must not try to fetch bodies from: they gate automated access, and
 # working around that gate is out of bounds.

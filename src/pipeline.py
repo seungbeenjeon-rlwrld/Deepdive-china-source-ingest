@@ -13,12 +13,9 @@ Stage 1 output is never summarised, trimmed or re-ordered before injection.
 from __future__ import annotations
 
 import contextlib
-import json
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
-from urllib.parse import urlparse
 
 from .collectors import (
     CNINFO_QUERY_URL,
@@ -38,11 +35,8 @@ from .models import (
     SourceRecord,
 )
 from .parsing import (
-    _NEWS_KEYWORDS,
     cluster_by_title,
-    dedupe_records,
     _find_listed_entity,
-    _identity_tokens,
     _official_host_candidates,
     _parse_json_object,
     clean_queries,
@@ -74,6 +68,21 @@ from .storage import (
     md_document,
 )
 INDEX_MD = "00_INDEX.md"
+
+# URL-field values that name no page, so they must never key a merge. A stage 2
+# model writes 同上/见上 ("as above") when a row repeats the previous link.
+_PLACEHOLDER_URLS = ("同上", "见上", "同前", "如上", "见上文", "同上链接", "-", "n/a", "无")
+
+
+def _is_mergeable_url(url: str) -> bool:
+    url = (url or "").strip()
+    if not url or url in _PLACEHOLDER_URLS:
+        return False
+    # Must be a real http(s) URL with a host, not "http://" or "#frag".
+    if not url.lower().startswith(("http://", "https://")):
+        return False
+    rest = url.split("://", 1)[1]
+    return bool(rest and not rest.startswith(("/", "#", "?")))
 LOCAL_JSON, LOCAL_MD = "08_local_sources.json", "08_local_sources.md"
 
 # Statuses that mean "we never got the article body".
@@ -229,9 +238,17 @@ class Pipeline:
         self._write_index()
 
     def _already_saved(self, record: SourceRecord) -> bool:
-        """Has this URL been written already? Merge into the existing record if so."""
+        """Has this real URL been written already? Merge the origins if so.
+
+        A URL is only a merge key if it actually identifies a page. Stage 2
+        models write "同上" ("as above") in the URL field when a source repeats
+        the previous row's link, and 37 unrelated sources in one UBTech run
+        shared that literal string. Keying on it would collapse them into one.
+        A bare "http://" or an anchor-only fragment is the same kind of
+        non-identifier.
+        """
         url = (record.canonical_url or record.retrieval_url or "").strip()
-        if not url:
+        if not _is_mergeable_url(url):
             return False
         for existing in self._saved:
             if (existing.canonical_url or existing.retrieval_url or "").strip() != url:

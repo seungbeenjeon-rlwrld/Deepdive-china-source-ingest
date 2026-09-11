@@ -262,10 +262,8 @@ def main(argv: list[str] | None = None) -> int:
             say("  -> Re-run with --company \"<name>\" alongside --resume.")
             return 2
 
-    interactive = False
     if not company:
         company = prompt_company()
-        interactive = True
     else:
         say(BANNER)
         say()
